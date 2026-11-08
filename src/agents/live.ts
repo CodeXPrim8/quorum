@@ -162,7 +162,7 @@ export async function connectLiveVoice(input: {
   return {
     ready: true,
     setMuted(muted) {
-      sender.track.enabled = !muted
+      if (sender.track) sender.track.enabled = !muted
       mic.getTracks().forEach((track) => {
         track.enabled = !muted
       })

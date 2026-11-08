@@ -35,7 +35,7 @@ export function quorumHistory(state: Pick<AppState, 'threads' | 'chat'>): ChatTh
   }
   return state.threads
     .filter((thread) => thread.kind === 'quorum' && state.chat.some((message) => message.threadId === thread.id))
-    .sort((a, b) => lastIndex(b) - lastIndex(a) || a.name.localeCompare(b.name))
+    .sort((a, b) => lastIndex(b.id) - lastIndex(a.id) || a.name.localeCompare(b.name))
 }
 
 function activeStaff(state: AppState): Staff[] {

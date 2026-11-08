@@ -64,11 +64,6 @@ function smallStep(before: number, after: number): boolean {
   return before >= 24 * 60 - 20 && after <= 20
 }
 
-function crossedMinute(before: number, after: number, at: number): boolean {
-  if (after >= before) return before < at && after >= at
-  return before < at || after >= at
-}
-
 function advanceClock(state: AppState, now: number): AppState {
   if (state.settings.realTime) {
     const minute = wallMinute(now)

@@ -252,11 +252,7 @@ export function ChatView({
             {callMenu && shown.kind !== 'direct' && (
               <div className="wa-call-menu">
                 <h2>Voice call</h2>
-                <p>
-                  {shown.kind === 'direct'
-                    ? 'Private call with this person. They will sit at their desk with a headset in the office.'
-                    : 'Call the whole group, or pick people for a private huddle. Anyone on the line sits at their laptop in the office.'}
-                </p>
+                <p>Call the whole group, or pick people for a private huddle. Anyone on the line sits at their laptop in the office.</p>
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -264,7 +260,7 @@ export function ChatView({
                     joinCall(shown.memberIds)
                   }}
                 >
-                  {shown.kind === 'direct' ? 'Private call' : 'Group call'}
+                  Group call
                 </button>
                 <fieldset>
                   <legend>Or a smaller huddle</legend>

@@ -575,7 +575,7 @@ async function runDesktopLoop(
         options.full,
       )
       if (/could not parse a desktop action/i.test(action.note ?? '')) {
-        history.push(action.note)
+        if (action.note) history.push(action.note)
         history.push('I stopped. The model did not return a usable action.')
         break
       }
