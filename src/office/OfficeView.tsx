@@ -5,7 +5,6 @@ import { FLOOR_MEETING } from '../engine/apply'
 import { clockOpen } from '../engine/life'
 import { activityLine, formatClock, formatWhen } from '../lib/format'
 import { OfficeScene } from './OfficeScene'
-import { LOTS } from './xoral-layout'
 import type { AppState, Command } from '../types'
 
 type Props = {
@@ -17,24 +16,12 @@ type Props = {
 
 export function OfficeView({ state, dispatch, onOpenStaff, onOpenTask }: Props) {
   const [now, setNow] = useState(() => Date.now())
-  const [departmentId, setDepartmentId] = useState('all')
-  const [staffId, setStaffId] = useState('all')
   const [focusId, setFocusId] = useState<string | null>(null)
-  const [cityHour, setCityHour] = useState(15)
-  const [cityRuns, setCityRuns] = useState(false)
-  const [ownedLots, setOwnedLots] = useState<string[]>([])
-  const [place, setPlace] = useState<{ x: number; z: number; token: number } | null>(null)
   const reduced = state.settings.reducedMotion
   const showFloor = state.settings.showFloor
   const activeStaff = state.staff.filter((person) => isStaffActive(state, person))
   const someoneMoving = activeStaff.some((person) => person.presence.movingUntil > Date.now() || person.presence.pose === 'drink')
   const open = clockOpen(state.clock)
-
-  useEffect(() => {
-    if (!cityRuns) return
-    const id = window.setInterval(() => setCityHour((hour) => (hour + 0.2) % 24), 800)
-    return () => window.clearInterval(id)
-  }, [cityRuns])
 
   useEffect(() => {
     if (!someoneMoving) return
@@ -65,118 +52,20 @@ export function OfficeView({ state, dispatch, onOpenStaff, onOpenTask }: Props) 
           >
             {activeStaff.some((person) => person.presence.meetingTaskId === FLOOR_MEETING) ? 'End meeting' : 'Call meeting'}
           </button>
-          <button type="button" className="btn" onClick={() => dispatch({ type: 'ADVANCE_TASK' })}>
-            Advance one demo step
-          </button>
-          <button
-            type="button"
-            className={state.settings.engineRunning ? 'btn btn-primary' : 'btn'}
-            onClick={() => dispatch({ type: 'SET_ENGINE', running: !state.settings.engineRunning })}
-          >
-            {state.settings.engineRunning ? 'Pause demo engine' : 'Run demo engine'}
-          </button>
         </div>
       </header>
-
-      <DemoBanner running={state.settings.engineRunning} />
-
-      <div className="toolbar">
-        <label>
-          Department
-          <select value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}>
-            <option value="all">All departments</option>
-            {state.departments.map((department) => (
-              <option key={department.id} value={department.id}>
-                {department.name}
-                {department.enabled ? '' : ' (off)'}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Person
-          <select value={staffId} onChange={(event) => setStaffId(event.target.value)}>
-            <option value="all">Everyone</option>
-            {activeStaff.map((person) => (
-              <option key={person.id} value={person.id}>
-                {person.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={reduced}
-            onChange={(event) => dispatch({ type: 'SET_REDUCED_MOTION', value: event.target.checked })}
-          />
-          Reduced motion
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={showFloor}
-            onChange={(event) => dispatch({ type: 'SET_FLOOR', visible: event.target.checked })}
-          />
-          Animated floor
-        </label>
-      </div>
-
-      <div className="city-bar">
-        <div>
-          <p className="eyebrow">Xoral City</p>
-          <p className="fine">The city of AI agents, around this office. The office itself stays as it is. Staff monitoring stays in the list below.</p>
-        </div>
-        <label>
-          City hour {formatCityHour(cityHour)}
-          <input
-            type="range"
-            min={0}
-            max={24}
-            step={0.25}
-            value={cityHour}
-            onChange={(event) => setCityHour(Number(event.target.value))}
-          />
-        </label>
-        <button type="button" className={cityRuns ? 'btn btn-primary' : 'btn'} onClick={() => setCityRuns((value) => !value)}>
-          {cityRuns ? 'Pause city time' : 'Let city time run'}
-        </button>
-        <button type="button" className="btn" onClick={() => setPlace({ x: 12, z: 12, token: Date.now() })}>
-          Return to the office
-        </button>
-        <div className="city-lots">
-          <span className="fine">Northline office</span>
-          {LOTS.map((lot) => {
-            const owned = ownedLots.includes(lot.id)
-            return (
-              <span key={lot.id}>
-                <button type="button" className="btn" onClick={() => setPlace({ x: lot.x, z: lot.z, token: Date.now() })}>
-                  {lot.name}
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setOwnedLots((current) => (current.includes(lot.id) ? current.filter((id) => id !== lot.id) : [...current, lot.id]))}
-                >
-                  {owned ? 'Release lot' : 'Acquire lot'}
-                </button>
-              </span>
-            )
-          })}
-        </div>
-      </div>
 
       {showFloor ? (
         <div className={reduced ? 'stage is-reduced' : 'stage'}>
           <OfficeScene
             state={state}
             now={now}
-            departmentId={departmentId}
-            staffId={staffId}
+            departmentId="all"
+            staffId="all"
             onSelect={setFocusId}
-            cityHour={cityHour}
-            ownedLots={ownedLots}
-            focus={place}
+            cityHour={state.clock.minute / 60}
+            ownedLots={[]}
+            focus={null}
           />
         </div>
       ) : (
@@ -206,10 +95,7 @@ export function OfficeView({ state, dispatch, onOpenStaff, onOpenTask }: Props) 
                   </tr>
                 </thead>
                 <tbody>
-                  {activeStaff
-                    .filter((person) => departmentId === 'all' || person.departmentId === departmentId)
-                    .filter((person) => staffId === 'all' || person.id === staffId)
-                    .map((person) => {
+                  {activeStaff.map((person) => {
                       const task = assignmentFor(state, person.id)
                       return (
                         <tr key={person.id}>
@@ -283,16 +169,8 @@ function FocusLine({
   )
 }
 
-function formatCityHour(hour: number): string {
-  const h = Math.floor(hour) % 24
-  const m = Math.floor((hour % 1) * 60)
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
-
-export function DemoBanner({ running }: { running: boolean }) {
+export function DemoBanner({ running: _running }: { running?: boolean }) {
   return (
-    <p className="banner">
-      Practice company in this browser. Nothing is sent outside.{running ? ' Task steps are advancing.' : ''}
-    </p>
+    <p className="banner">Staff work with the linked AI brain inside Quorum. Nothing is sent outside until you connect that channel.</p>
   )
 }

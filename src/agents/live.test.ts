@@ -7,6 +7,9 @@ describe('live voice events', () => {
     expect(
       transcriptFromEvent({ type: 'conversation.item.input_audio_transcription.completed', transcript: '  Priya, status  ' }),
     ).toBe('Priya, status')
+    expect(
+      transcriptFromEvent({ type: 'conversation.item.input_audio_transcription.done', item: { transcript: 'Morgan, go.' } }),
+    ).toBe('Morgan, go.')
     expect(transcriptFromEvent({ type: 'response.audio.delta', delta: 'abc' })).toBeNull()
   })
 
@@ -14,6 +17,8 @@ describe('live voice events', () => {
     const messages = speakMessages('I am on the quote.', 'coral', 'woman')
     const blob = JSON.stringify(messages)
     expect(blob).toMatch(/Say this exactly/)
+    expect(blob).toMatch(/"type":"realtime"/)
+    expect(blob).toMatch(/output_modalities/)
     expect(blob).not.toMatch(/Managing Director|staff_priya|Sales Manager/)
     expect(liveVoiceName('woman', 0)).toBe('coral')
     expect(liveVoiceName('man', 0)).toBe('ash')

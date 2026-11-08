@@ -9,7 +9,7 @@ import type { AppState, Staff } from '../types'
 import { City } from './city'
 import { XoralCity } from './xoral'
 import { Facilities } from './facilities'
-import { Human } from './human'
+import { StaffFigure } from './staff-figure'
 import { tvTexture, workTexture } from './screens'
 import { wallSolids, waterSpot, rooms, deskSlots, meetingChairs, BUILDING, type Spot } from './world'
 
@@ -45,7 +45,7 @@ export function OfficeScene(props: Props) {
       <XoralCity hour={props.cityHour} skyNight={!sunUp} reduced={props.state.settings.reducedMotion} owned={props.ownedLots} />
       <Building state={props.state} lit={officeOn} drinking={drinking} now={props.now} people={people} />
       {people.map((person) => (
-        <Human
+        <StaffFigure
           key={person.id}
           state={props.state}
           person={person}

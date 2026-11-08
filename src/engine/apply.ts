@@ -1,18 +1,16 @@
 /**
- * Local mock task engine.
+ * Company command engine.
  *
  * The UI dispatches commands and renders the returned state. Walks, meetings,
  * and desk work are presence fields — the office must not animate anything
  * that is not represented here.
  *
- * Replace this module with a real agent backend later. Keep Command and
- * AppState, or adapt the store in one place. This file never marks an
- * integration connected. desktop.agentConnected stays false: the build
- * cannot see or control the computer.
+ * Desktop control only runs while the owner has started an explicit, revocable
+ * session (see START_DESKTOP_SESSION).
  */
 import { isStaffActive, isStaffIdActive, staffById } from '../domain/active'
 import { grantsFrom, permissionMeta } from '../domain/catalog'
-import { COMPANY_THREAD, directThreadId, ensureChat, mentionsIn } from '../chat/threads'
+import { COMPANY_THREAD, QUORUM_THREAD, directThreadId, emptyQuorumId, ensureChat, mentionsIn, titleFromAsk, withoutMarks } from '../chat/threads'
 import {
   compileForOwner,
   isLineManager,
@@ -22,38 +20,62 @@ import {
   reportCadence,
   reportsTo,
 } from '../domain/reports'
-import { campaignPoster, type PosterShape } from '../domain/poster'
-import { calendarSummary, formatLabel, offeringsFromGoals, planMissing, platformLabel } from '../domain/calendar'
-import { appearanceAt, bareSample, blankState, ensureOfferings, instantiateDepartments, instantiateRoles } from '../domain/sample'
+import { designAudience } from '../domain/design-audience'
+import { composePoster } from '../domain/poster'
+import {
+  calendarDocument,
+  calendarSummary,
+  formatLabel,
+  monthNameForDay,
+  offeringsFromGoals,
+  planMissing,
+  platformLabel,
+} from '../domain/calendar'
+import { documentPdf, pdfDataUrl } from '../lib/pdf'
+import { proposalPdf } from '../lib/proposal-pdf'
+import { documentOf, parseDocument, withWriter } from '../agents/writing'
+import { appearanceAt, blankState, ensureOfferings, instantiateDepartments, instantiateRoles } from '../domain/sample'
+import { nameForRole } from '../domain/staff-names'
 import { meetingChairs, nextDesk, reportSpots } from '../office/world'
 import { arrivalTime, settledPresence, walkingPresence } from '../office/presence'
 import { iso, uid } from '../lib/format'
 import { advanceLife, defaultLife, freshClock } from './life'
+import { canOpenDayToDay, managingDirector } from '../domain/authority'
+import { accountFor, normalizeSocial } from '../domain/social'
+import { BILLING_PLANS, isPlanId } from '../domain/billing'
+import { lessonFromOwner, remember, type MemoryKind } from '../domain/memory'
+import { normalizeWebsite } from '../domain/website'
+import { fileApprovalRecord } from '../domain/records'
+import { clientLane, clientReply, pickStaff } from '../domain/whatsapp'
 import { actionLabel, approvalOutcome, rejectionOutcome } from './outcomes'
 import type {
   ActivityEvent,
   AppState,
+  CalendarDraft,
   CalendarPost,
   ChatMessage,
   Command,
   Design,
+  DesignAudience,
   Company,
   CompanyInput,
+  CompanyMetaStatus,
   ConsequentialAction,
+  DesktopMode,
   EventKind,
   Handoff,
   PermissionId,
   PlaybookStep,
   Pose,
-  PostFormat,
   PresenceMode,
   RoleInput,
-  Settings,
   Staff,
   StaffInput,
   StaffReport,
   Task,
   TaskInput,
+  WaChat,
+  WaMessage,
 } from '../types'
 
 /** Presence marker for a meeting the owner called from the office. Not a task. */
@@ -64,36 +86,24 @@ export function currentStep(task: Task): PlaybookStep | null {
 }
 
 export function canAdvanceTask(task: Task): boolean {
-  if (task.source !== 'demo_playbook' || task.status !== 'in_progress') return false
+  if ((task.source !== 'staff' && task.source !== 'owner') || task.status !== 'in_progress') return false
   if (task.handoff) return true
   const step = currentStep(task)
   return step?.kind === 'work' || step?.kind === 'meet'
 }
 
-export function createSampleState(now: number, prefs?: Partial<Settings>): AppState {
-  const state: AppState = {
-    ...bareSample(now),
-    settings: {
-      reducedMotion: prefs?.reducedMotion ?? false,
-      showFloor: prefs?.showFloor ?? true,
-      engineRunning: false,
-      agentsWorking: prefs?.agentsWorking ?? true,
-    },
-  }
-  const primed = prime(ensureChat(state), now)
-  return primed.settings.reducedMotion ? resolvePresence(primed, now) : primed
+function learn(state: AppState, now: number, kind: MemoryKind, text: string): AppState {
+  const memory = remember(state.memory, { id: uid('mem'), at: iso(now), kind, text })
+  return memory === state.memory ? state : { ...state, memory }
 }
 
 export function applyCommand(incoming: AppState, command: Command, now: number): AppState {
   const state = ensureOfferings(ensureChat(incoming))
   switch (command.type) {
     case 'TICK':
-      return tick(state, now)
-    case 'LOAD_SAMPLE':
-      return createSampleState(now, {
-        reducedMotion: state.settings.reducedMotion,
-        showFloor: state.settings.showFloor,
-      })
+      return scrubOrphanWhatsApp(tick(state, now))
+    case 'REMEMBER':
+      return learn(state, now, command.kind, command.text)
     case 'RESET':
       return {
         ...blankState(state.settings.reducedMotion),
@@ -106,6 +116,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       }
     case 'CREATE_COMPANY':
       return createCompany(state, command.input, now)
+    case 'SET_BILLING_PLAN':
+      return setBillingPlan(state, command.planId, now)
     case 'UPDATE_COMPANY':
       return updateCompany(state, command.patch, now)
     case 'ADD_GOAL':
@@ -132,6 +144,14 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return setPermission(state, command.staffId, command.permissionId, command.granted, now)
     case 'CREATE_TASK':
       return createTask(state, command.input, now)
+    case 'UPDATE_TASK':
+      return updateTask(state, command.taskId, command.patch, now)
+    case 'STAFF_CREATE_TASK':
+      return staffCreateTask(state, command.staffId, command.input, command.goalId, now)
+    case 'PROPOSE_GOAL':
+      return proposeGoal(state, command.staffId, command.text, now)
+    case 'DECIDE_GOAL':
+      return decideGoal(state, command.proposalId, command.decision, command.text, now)
     case 'SET_PRIORITY':
       return setPriority(state, command.taskId, command.priority, now)
     case 'PAUSE_TASK':
@@ -148,6 +168,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return clearBlocker(state, command.taskId, command.blockerId, now)
     case 'ADVANCE_TASK':
       return command.taskId ? advanceTask(state, command.taskId, now, true) : advanceAny(state, now)
+    case 'COMPLETE_WORK':
+      return completeStaffWork(state, command.taskId, command.staffId, command.text, command.result ?? '', now)
     case 'REVIEW_TASK':
       return reviewTask(state, command.taskId, command.decision, command.note, now)
     case 'DECIDE_APPROVAL':
@@ -161,9 +183,11 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
     case 'SET_ON_CALL':
       return setOnCall(state, command.staffIds, now)
     case 'REQUEST_DESIGN':
-      return requestDesign(state, command.brief, now, command.calendarId)
+      return requestDesign(state, command.brief, now, command.calendarId, command.audience)
+    case 'SET_DESIGN_ART':
+      return setDesignArt(state, command.designId, command.image ?? '')
     case 'PLAN_CALENDAR':
-      return planCalendar(state, now)
+      return planCalendar(state, now, command.drafts)
     case 'REVIEW_DESIGN':
       return reviewDesign(state, command.designId, command.decision, command.note ?? '', now, command.by ?? 'owner')
     case 'SET_MARKETING_REVIEW':
@@ -172,6 +196,32 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return setReportCadence(state, command.cadence, now)
     case 'SEND_MESSAGE':
       return sendMessage(state, command.threadId, command.text, now, command.wake !== false)
+    case 'NEW_QUORUM_CHAT':
+      return newQuorumChat(state, command.id, now)
+    case 'RENAME_QUORUM_CHAT':
+      return renameQuorumChat(state, command.threadId, command.name)
+    case 'DELETE_QUORUM_CHAT':
+      return deleteQuorumChat(state, command.threadId)
+    case 'QUORUM_MESSAGE':
+      return quorumSay(state, command.text, now, command.threadId)
+    case 'MAKE_QUORUM_PDF':
+      return makeQuorumPdf(state, command.messageId, now)
+    case 'EDIT_QUORUM_DOCUMENT':
+      return editQuorumDocument(state, command.messageId, command.body, command.title)
+    case 'EDIT_OWNER_MESSAGE':
+      return editOwnerMessage(state, command.messageId, command.text, now)
+    case 'RETRY_QUORUM':
+      return retryQuorum(state, command.threadId)
+    case 'ASK_QUORUM_DESKTOP':
+      return askQuorumDesktop(state, command.reason, command.prompt, now, command.threadId, command.steps)
+    case 'DECIDE_QUORUM_DESKTOP':
+      return decideQuorumDesktop(state, command.decision, now)
+    case 'FINISH_QUORUM_DESKTOP':
+      return finishQuorumDesktop(state, now)
+    case 'SET_QUORUM_SCREEN':
+      return setQuorumScreen(state, command.screen)
+    case 'READ_THREAD':
+      return readThread(state, command.threadId, now)
     case 'CREATE_GROUP':
       return createGroup(state, command.id, command.name, command.memberIds, now)
     case 'AGENT_MESSAGE':
@@ -190,6 +240,21 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
     case 'SET_AGENTS':
       if (command.working === state.settings.agentsWorking) return state
       return { ...state, settings: { ...state.settings, agentsWorking: command.working } }
+    case 'SET_REAL_TIME':
+      if (command.value === Boolean(state.settings.realTime)) return state
+      return withEvent(
+        { ...state, settings: { ...state.settings, realTime: command.value } },
+        now,
+        {
+          actorId: 'owner',
+          actorName: ownerName(state),
+          kind: 'system',
+          audit: true,
+          message: command.value
+            ? 'Staff now follow the time on this computer. Morning, afternoon, and night match where you are.'
+            : 'Staff are back on the office clock.',
+        },
+      )
     case 'SET_ENGINE':
       if (command.running === state.settings.engineRunning) return state
       return withEvent(
@@ -201,8 +266,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
           kind: 'system',
           audit: true,
           message: command.running
-            ? 'You turned on the demo task engine. It advances playbook steps already in progress. It does not contact any external system.'
-            : 'You paused the demo task engine. Walks already in progress still finish. New playbook steps wait.',
+            ? 'You turned on timed meeting advancement. Staff AI still does the real desk work when agents are working.'
+            : 'You paused timed meeting advancement. Walks already in progress still finish. Staff AI can still complete work.',
         },
       )
     case 'SET_REDUCED_MOTION': {
@@ -228,6 +293,24 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
     case 'SET_FLOOR':
       if (command.visible === state.settings.showFloor) return state
       return { ...state, settings: { ...state.settings, showFloor: command.visible } }
+    case 'SET_DESKTOP_AGENT':
+      return setDesktopAgent(state, command.connected, now)
+    case 'START_DESKTOP_SESSION':
+      return startDesktopSession(state, command.mode, now)
+    case 'END_DESKTOP_SESSION':
+      return endDesktopSession(state, now)
+    case 'CLEAR_DESKTOP_GRANT':
+      return clearDesktopGrant(state, now)
+    case 'SET_COMPANY_META':
+      return setCompanyMeta(state, command.meta)
+    case 'WHATSAPP_INBOUND':
+      return receiveWhatsApp(state, command, now)
+    case 'WHATSAPP_DELIVERY':
+      return markWhatsAppDelivery(state, command.phone, command.messageId, command.status, now)
+    case 'WHATSAPP_DROP':
+      return dropWhatsApp(state, command.phone)
+    case 'INSTAGRAM_RESULT':
+      return instagramResult(state, command.designId, command.status, now, command.error, command.mediaId)
     default:
       return state
   }
@@ -275,6 +358,7 @@ function fileStaffNotes(state: AppState, now: number): AppState {
     const manager = state.staff.find((item) => item.id === person.managerId)
     if (!manager || !isStaffActive(state, manager)) continue
     const text = noteFor(person, state, day)
+    if (!text) continue
     reports.push({ id: uid('rep'), staffId: person.id, managerId: person.managerId, day, text })
     const thread = state.threads.find((item) => item.id === lineThreadId(person.id))
     if (!thread) continue
@@ -301,6 +385,7 @@ function fileOwnerReports(state: AppState, now: number, cadence: NonNullable<App
   const since = state.clock.ownerReportDay
   const managers = state.staff.filter((person) => isStaffActive(state, person) && (isLineManager(state, person) || !person.managerId))
   const chat = [...state.chat]
+  let sent = false
   for (const manager of managers) {
     const team = reportsTo(state, manager.id)
     const notes = (state.reports ?? []).filter(
@@ -315,8 +400,10 @@ function fileOwnerReports(state: AppState, now: number, cadence: NonNullable<App
       text: noteFor(manager, state, day),
     }
     const text = compileForOwner(manager, [...notes, own], day, cadence)
+    if (!text) continue
     const thread = state.threads.find((item) => item.id === directThreadId(manager.id))
     if (!thread) continue
+    sent = true
     chat.push(
       chatMessage(now, {
         threadId: thread.id,
@@ -327,6 +414,7 @@ function fileOwnerReports(state: AppState, now: number, cadence: NonNullable<App
       }),
     )
   }
+  if (!sent) return { ...state, clock: { ...state.clock, ownerReportDay: day } }
   const next = {
     ...state,
     chat,
@@ -341,7 +429,7 @@ function fileOwnerReports(state: AppState, now: number, cadence: NonNullable<App
   })
 }
 
-function prime(state: AppState, now: number): AppState {
+export function prime(state: AppState, now: number): AppState {
   let next = state
   next = startTask(next, 'task_campaign', now - 8_000)
   for (const id of ['task_coordinate', 'task_checklist', 'task_quotes', 'task_margin']) {
@@ -357,7 +445,7 @@ function prime(state: AppState, now: number): AppState {
 }
 
 /** Finishes walks and meetings that have already reached their time. Does not invent new work. */
-function resolvePresence(state: AppState, now: number): AppState {
+export function resolvePresence(state: AppState, now: number): AppState {
   let current = state
   for (let pass = 0; pass < 8; pass += 1) {
     const handoffs = current.tasks.filter((task) => task.handoff && now >= task.handoff.arriveAt).map((task) => task.id)
@@ -410,14 +498,14 @@ function advanceAny(state: AppState, now: number): AppState {
 }
 
 function advanceOneDueWork(state: AppState, now: number): AppState {
+  // Timed auto-advance is for meetings only. Desk work is completed by staff AI (COMPLETE_WORK).
   const candidate = state.tasks
     .filter((task) => {
       const step = currentStep(task)
       return (
-        task.source === 'demo_playbook' &&
         task.status === 'in_progress' &&
         !task.handoff &&
-        step?.kind === 'work' &&
+        step?.kind === 'meet' &&
         task.stepStartedAt != null &&
         now >= task.stepStartedAt + step.durationMs &&
         isStaffIdActive(state, task.assigneeId)
@@ -426,6 +514,49 @@ function advanceOneDueWork(state: AppState, now: number): AppState {
     .sort((a, b) => (a.stepStartedAt ?? 0) - (b.stepStartedAt ?? 0))[0]
   if (!candidate) return state
   return finishWorkOrMeet(state, candidate.id, now)
+}
+
+function completeStaffWork(
+  state: AppState,
+  taskId: string,
+  staffId: string,
+  text: string,
+  result: string,
+  now: number,
+): AppState {
+  const task = taskOf(state, taskId)
+  const person = state.staff.find((item) => item.id === staffId)
+  const step = task ? currentStep(task) : null
+  const body = text.trim()
+  if (!task || !person || !body || task.assigneeId !== staffId) return state
+  if (task.status !== 'in_progress' || task.handoff || step?.kind !== 'work') return state
+  const message = chatMessage(now, {
+    threadId: COMPANY_THREAD,
+    authorId: person.id,
+    authorName: person.name,
+    text: body.slice(0, 1200),
+    mentions: [],
+  })
+  let next: AppState = {
+    ...state,
+    chat: [...state.chat, message],
+    agentSeen: { ...state.agentSeen, [person.id]: now },
+    agentPulse: now,
+  }
+  next = withEvent(next, now, {
+    actorId: person.id,
+    actorName: person.name,
+    kind: 'result',
+    taskId,
+    staffId: person.id,
+    audit: true,
+    message: `${person.name} filed work on “${task.title}” in the company chat.`,
+  })
+  next = patchTask(next, taskId, now, {
+    stepIndex: task.stepIndex + 1,
+    result: result.trim() || task.result,
+  })
+  return startCurrentStep(next, taskId, now)
 }
 
 function advanceTask(state: AppState, taskId: string, now: number, force: boolean): AppState {
@@ -790,7 +921,7 @@ function openApproval(
   if (!canRequest(person, action)) {
     const reason =
       action === 'desktop_control'
-        ? `${person.name} cannot request desktop control because that permission is off. This build has no desktop agent, so the computer cannot be viewed or controlled.`
+        ? `${person.name} cannot request desktop control because that permission is off.`
         : `${person.name} cannot request “${actionLabel(action)}” because that permission is revoked.`
     return blockTask(state, task.id, now, reason)
   }
@@ -839,7 +970,7 @@ function requestApproval(state: AppState, taskId: string, now: number): AppState
       taskId,
       now,
       task.consequential.action === 'desktop_control'
-        ? `${person.name} cannot request desktop control because that permission is off. No desktop agent is connected.`
+        ? `${person.name} cannot request desktop control because that permission is off.`
         : `${person.name} cannot request this because the permission is revoked.`,
     )
   }
@@ -856,7 +987,13 @@ function decideApproval(
 ): AppState {
   const approval = state.approvals.find((item) => item.id === approvalId)
   if (!approval || approval.status !== 'pending') return state
-  const outcome = decision === 'approved' ? approvalOutcome(approval.action) : rejectionOutcome(approval.action)
+  const outcome =
+    decision === 'approved'
+      ? approvalOutcome(approval.action, {
+          sessionActive: state.desktop.sessionActive,
+          mode: state.desktop.mode,
+        })
+      : rejectionOutcome(approval.action)
   const noted = note.trim() ? `${outcome} Note: ${note.trim()}` : outcome
   let next: AppState = {
     ...state,
@@ -870,12 +1007,45 @@ function decideApproval(
   const person = task ? staffById(next, task.assigneeId) : null
   if (decision === 'approved' && task) {
     const step = currentStep(task)
-    next = patchTask(next, task.id, now, {
-      status: 'in_review',
-      result: noted,
-      blockers: [],
-      stepIndex: step?.kind === 'approval' ? task.stepIndex + 1 : task.stepIndex,
-    })
+    if (
+      approval.action === 'desktop_control' &&
+      next.desktop.sessionActive &&
+      next.desktop.mode &&
+      person
+    ) {
+      next = {
+        ...next,
+        desktop: {
+          ...next.desktop,
+          grantedStaffId: person.id,
+          grantedTaskId: task.id,
+        },
+      }
+      next = patchTask(next, task.id, now, {
+        status: 'in_progress',
+        result: noted,
+        blockers: [],
+        stepIndex: step?.kind === 'approval' ? task.stepIndex + 1 : task.stepIndex,
+        stepStartedAt: now,
+      })
+    } else {
+      if (approval.action !== 'desktop_control') {
+        const filed = fileApprovalRecord(
+          next,
+          approval.action,
+          { id: task.id, title: task.title, description: task.description },
+          person?.id,
+          now,
+        )
+        next = filed.state
+      }
+      next = patchTask(next, task.id, now, {
+        status: 'in_review',
+        result: noted,
+        blockers: [],
+        stepIndex: step?.kind === 'approval' ? task.stepIndex + 1 : task.stepIndex,
+      })
+    }
     if (person) next = visitOwner(next, person.id, now)
   } else if (task) {
     next = patchTask(next, task.id, now, {
@@ -884,10 +1054,15 @@ function decideApproval(
     })
     if (person) next = goHome(next, person.id, now)
   }
-  return withEvent(next, now, {
+  const kind = approval.action === 'desktop_control' ? 'desktop' : 'approval'
+  const lesson =
+    decision === 'approved'
+      ? `The owner approved “${task?.title ?? 'that request'}”.`
+      : `The owner rejected “${task?.title ?? 'that request'}”${note.trim() ? `: ${note.trim()}` : ''}.`
+  return withEvent(learn(next, now, 'decision', lesson), now, {
     actorId: 'owner',
     actorName: ownerName(state),
-    kind: 'approval',
+    kind,
     taskId: approval.taskId,
     staffId: person?.id,
     audit: true,
@@ -903,7 +1078,7 @@ function reviewTask(state: AppState, taskId: string, decision: 'accept' | 'chang
     let next = patchTask(state, taskId, now, { status: 'done', stepIndex: Math.max(task.stepIndex, task.playbook.length) })
     if (person) next = goHome(next, person.id, now)
     const extra = note.trim() ? ` Note: ${note.trim()}` : ''
-    return withEvent(next, now, {
+    return withEvent(learn(next, now, 'decision', `The owner accepted “${task.title}”${extra}`), now, {
       actorId: 'owner',
       actorName: ownerName(state),
       kind: 'result',
@@ -922,7 +1097,7 @@ function reviewTask(state: AppState, taskId: string, decision: 'accept' | 'chang
     blockers: [...task.blockers, { id: uid('blk'), text: `Changes requested: ${note.trim() || 'Please revise.'}`, at: iso(now) }],
   })
   if (person) next = goHome(next, person.id, now)
-  return withEvent(next, now, {
+  return withEvent(learn(next, now, 'decision', `The owner wants changes on “${task.title}”: ${note.trim() || 'Please revise.'}`), now, {
     actorId: 'owner',
     actorName: ownerName(state),
     kind: 'task',
@@ -1103,6 +1278,132 @@ function createTask(state: AppState, input: TaskInput, now: number): AppState {
   })
 }
 
+function updateTask(
+  state: AppState,
+  taskId: string,
+  patch: Partial<Pick<TaskInput, 'title' | 'description' | 'priority' | 'assigneeId'>>,
+  now: number,
+): AppState {
+  const task = taskOf(state, taskId)
+  if (!task || task.status === 'done') return state
+  const assignee = patch.assigneeId ? staffById(state, patch.assigneeId) : null
+  if (patch.assigneeId && (!assignee || !isStaffActive(state, assignee))) return state
+  const title = patch.title !== undefined ? patch.title.trim() : task.title
+  if (!title) return state
+  return patchTask(state, taskId, now, {
+    title,
+    description: patch.description !== undefined ? patch.description.trim() : task.description,
+    priority: patch.priority ?? task.priority,
+    assigneeId: assignee?.id ?? task.assigneeId,
+    departmentId: assignee?.departmentId ?? task.departmentId,
+  })
+}
+
+function staffCreateTask(
+  state: AppState,
+  staffId: string,
+  input: TaskInput,
+  goalId: string | undefined,
+  now: number,
+): AppState {
+  const creator = staffById(state, staffId)
+  const assignee = staffById(state, input.assigneeId)
+  const title = input.title.trim()
+  if (!state.company || !creator || !assignee || !title || !isStaffActive(state, assignee)) return state
+  const departmentId = input.departmentId || assignee.departmentId
+  if (!canOpenDayToDay(state, creator, departmentId)) return state
+  if (goalId && !state.company.goals.some((goal) => goal.id === goalId)) return state
+  const id = uid('task')
+  const created: Task = {
+    id,
+    title,
+    description: input.description.trim(),
+    status: 'ready',
+    priority: input.priority,
+    assigneeId: assignee.id,
+    departmentId,
+    source: 'manager',
+    createdById: creator.id,
+    goalId,
+    playbook: [],
+    stepIndex: 0,
+    stepStartedAt: null,
+    handoff: null,
+    blockers: [],
+    result: null,
+    consequential: input.consequential,
+    createdAt: iso(now),
+    updatedAt: iso(now),
+  }
+  const goal = goalId ? state.company.goals.find((item) => item.id === goalId) : undefined
+  return withEvent({ ...state, tasks: [created, ...state.tasks] }, now, {
+    actorId: creator.id,
+    actorName: creator.name,
+    kind: 'task',
+    taskId: id,
+    staffId: assignee.id,
+    audit: true,
+    message: goal
+      ? `${creator.name} opened “${title}” for ${assignee.name} under “${goal.text}”.`
+      : `${creator.name} opened “${title}” for ${assignee.name}.`,
+  })
+}
+
+function proposeGoal(state: AppState, staffId: string, text: string, now: number): AppState {
+  const trimmed = text.trim()
+  const person = staffById(state, staffId)
+  const md = managingDirector(state)
+  if (!state.company || !person || !md || person.id !== md.id || !trimmed) return state
+  if ((state.goalProposals ?? []).some((item) => item.status === 'pending')) return state
+  const proposal = {
+    id: uid('goalp'),
+    text: trimmed,
+    status: 'pending' as const,
+    proposedById: person.id,
+    createdAt: iso(now),
+  }
+  return withEvent({ ...state, goalProposals: [proposal, ...(state.goalProposals ?? [])] }, now, {
+    actorId: person.id,
+    actorName: person.name,
+    kind: 'company',
+    staffId: person.id,
+    audit: true,
+    message: `${person.name} proposed a company goal for your approval: ${trimmed}`,
+  })
+}
+
+function decideGoal(
+  state: AppState,
+  proposalId: string,
+  decision: 'approved' | 'rejected',
+  text: string | undefined,
+  now: number,
+): AppState {
+  const proposal = (state.goalProposals ?? []).find((item) => item.id === proposalId && item.status === 'pending')
+  if (!proposal || !state.company) return state
+  const nextText = (text ?? proposal.text).trim() || proposal.text
+  const goalProposals = (state.goalProposals ?? []).map((item) =>
+    item.id === proposalId ? { ...item, status: decision, text: nextText, decidedAt: iso(now) } : item,
+  )
+  if (decision === 'rejected') {
+    return withEvent(learn({ ...state, goalProposals }, now, 'decision', `The owner declined the goal “${proposal.text}”.`), now, {
+      actorId: 'owner',
+      actorName: ownerName(state),
+      kind: 'company',
+      audit: true,
+      message: `You declined the goal “${proposal.text}”.`,
+    })
+  }
+  const company = { ...state.company, goals: [...state.company.goals, { id: uid('goal'), text: nextText }] }
+  return withEvent(learn({ ...state, company, goalProposals }, now, 'decision', `The owner approved the goal “${nextText}”.`), now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'company',
+    audit: true,
+    message: `You approved the goal “${nextText}”.`,
+  })
+}
+
 function blockTask(state: AppState, taskId: string, now: number, text: string): AppState {
   const task = taskOf(state, taskId)
   if (!task) return state
@@ -1123,7 +1424,7 @@ function blockTask(state: AppState, taskId: string, now: number, text: string): 
 function createCompany(state: AppState, input: CompanyInput, now: number): AppState {
   const name = input.name.trim()
   const goals = input.goals.map((goal) => goal.trim()).filter(Boolean)
-  if (!name || goals.length === 0) return state
+  if (!name) return state
   const departmentKeys = new Set(input.enabledDepartmentKeys)
   const roleKeys = new Set(input.enabledRoleKeys)
   if (input.appointMd) {
@@ -1148,20 +1449,24 @@ function createCompany(state: AppState, input: CompanyInput, now: number): AppSt
       ownerName: input.ownerName.trim() || 'Owner',
       ownerTitle: input.ownerTitle,
       ownerGender: input.ownerGender,
+      website: normalizeWebsite(input.website),
+      social: normalizeSocial(input.social),
       management: input.appointMd ? 'managing_director' : 'direct',
       createdAt: iso(now),
+      planId: 'starter',
     },
     departments,
     roles,
     clock: freshClock(now, 9 * 60 + 5),
   }
   const staff: Staff[] = []
+  const taken = new Set<string>()
   for (const role of orderedRoles(roles.filter((role) => role.enabled))) {
     const department = departments.find((item) => item.id === role.departmentId)
     const manager = role.reportsToRoleId ? staff.find((person) => person.roleId === role.reportsToRoleId) ?? null : null
     staff.push(
       makeStaff(staff, {
-        name: role.title,
+        name: nameForRole(role.key, taken),
         title: role.title,
         roleId: role.id,
         departmentId: role.departmentId,
@@ -1187,7 +1492,15 @@ function createCompany(state: AppState, input: CompanyInput, now: number): AppSt
 
 function updateCompany(
   state: AppState,
-  patch: Partial<{ name: string; businessType: string; ownerName: string; ownerTitle: 'Chairman' | 'CEO'; ownerGender: Company['ownerGender'] }>,
+  patch: Partial<{
+    name: string
+    businessType: string
+    ownerName: string
+    ownerTitle: 'Chairman' | 'CEO'
+    ownerGender: Company['ownerGender']
+    website: string
+    social: Company['social']
+  }>,
   now: number,
 ): AppState {
   if (!state.company) return state
@@ -1198,6 +1511,8 @@ function updateCompany(
     ownerName: patch.ownerName?.trim() || state.company.ownerName,
     ownerTitle: patch.ownerTitle ?? state.company.ownerTitle,
     ownerGender: patch.ownerGender ?? state.company.ownerGender,
+    website: patch.website !== undefined ? normalizeWebsite(patch.website) : state.company.website,
+    social: patch.social !== undefined ? normalizeSocial(patch.social) : state.company.social,
   }
   return withEvent({ ...state, company }, now, {
     actorId: 'owner',
@@ -1205,6 +1520,18 @@ function updateCompany(
     kind: 'company',
     audit: true,
     message: `You updated the company profile for ${company.name}.`,
+  })
+}
+
+function setBillingPlan(state: AppState, planId: string, now: number): AppState {
+  if (!state.company || !isPlanId(planId) || (state.company.planId ?? 'starter') === planId) return state
+  const company = { ...state.company, planId }
+  return withEvent({ ...state, company }, now, {
+    actorId: 'owner',
+    actorName: company.ownerName,
+    kind: 'company',
+    audit: true,
+    message: `You moved ${company.name} to the ${BILLING_PLANS.find((plan) => plan.id === planId)?.name ?? planId} plan.`,
   })
 }
 
@@ -1424,6 +1751,122 @@ function setStaffEnabled(state: AppState, staffId: string, enabled: boolean, now
   })
 }
 
+function setDesktopAgent(state: AppState, connected: boolean, now: number): AppState {
+  if (state.desktop.agentConnected === connected) return state
+  const next: AppState = {
+    ...state,
+    desktop: { ...state.desktop, agentConnected: connected },
+  }
+  return withEvent(next, now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'desktop',
+    audit: true,
+    message: connected
+      ? 'Desktop agent is ready on this computer. Start a session on Integrations when you want control available.'
+      : 'Desktop agent is offline. Desktop control stays in Quorum; start a session once the agent is back.',
+  })
+}
+
+function startDesktopSession(state: AppState, mode: DesktopMode, now: number): AppState {
+  if (!state.desktop.agentConnected) return state
+  if (state.desktop.sessionActive && state.desktop.mode === mode) return state
+  const label = mode === 'live' ? 'Live' : 'Approved'
+  if (state.desktop.sessionActive) {
+    return withEvent({ ...state, desktop: { ...state.desktop, mode } }, now, {
+      actorId: 'owner',
+      actorName: ownerName(state),
+      kind: 'desktop',
+      audit: true,
+      message: `Desktop session is now ${label}. End it anytime.`,
+    })
+  }
+  const next: AppState = {
+    ...state,
+    desktop: {
+      ...state.desktop,
+      agentConnected: true,
+      sessionActive: true,
+      mode,
+      startedAt: iso(now),
+      grantedStaffId: undefined,
+      grantedTaskId: undefined,
+    },
+  }
+  return withEvent(next, now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'desktop',
+    audit: true,
+    message: `You started a ${label} desktop session. Staff with permission may request control; you can end the session anytime.`,
+  })
+}
+
+function endDesktopSession(state: AppState, now: number): AppState {
+  if (!state.desktop.sessionActive && !state.desktop.grantedStaffId) {
+    if (state.desktop.mode === null) return state
+  }
+  const next: AppState = {
+    ...state,
+    quorumAsk:
+      state.quorumAsk?.status === 'granted' ? { ...state.quorumAsk, status: 'pending' } : state.quorumAsk,
+    desktop: {
+      agentConnected: state.desktop.agentConnected,
+      sessionActive: false,
+      mode: null,
+      startedAt: undefined,
+      grantedStaffId: undefined,
+      grantedTaskId: undefined,
+      grantedQuorum: undefined,
+    },
+  }
+  return withEvent(next, now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'desktop',
+    audit: true,
+    message: 'You ended the desktop session. The screen is private again and the pointer will not move until you start another session.',
+  })
+}
+
+function clearDesktopGrant(state: AppState, now: number): AppState {
+  if (!state.desktop.grantedStaffId && !state.desktop.grantedTaskId) return state
+  const next: AppState = {
+    ...state,
+    desktop: {
+      ...state.desktop,
+      grantedStaffId: undefined,
+      grantedTaskId: undefined,
+    },
+  }
+  return withEvent(next, now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'desktop',
+    audit: true,
+    message:
+      state.desktop.mode === 'approved'
+        ? 'The bounded desktop run finished. Another approval is required for further control.'
+        : 'Desktop grant cleared.',
+  })
+}
+
+function setCompanyMeta(state: AppState, meta: CompanyMetaStatus): AppState {
+  const same =
+    state.meta?.appReady === meta.appReady &&
+    state.meta?.canHost === meta.canHost &&
+    state.meta?.instagram.connected === meta.instagram.connected &&
+    state.meta?.instagram.source === meta.instagram.source &&
+    state.meta?.instagram.username === meta.instagram.username &&
+    state.meta?.instagram.accountId === meta.instagram.accountId &&
+    state.meta?.whatsapp.connected === meta.whatsapp.connected &&
+    state.meta?.whatsapp.source === meta.whatsapp.source &&
+    state.meta?.whatsapp.phoneNumberId === meta.whatsapp.phoneNumberId &&
+    state.meta?.whatsapp.displayPhone === meta.whatsapp.displayPhone
+  if (same) return state
+  return { ...state, meta }
+}
+
 function setPermission(state: AppState, staffId: string, permissionId: PermissionId, granted: boolean, now: number): AppState {
   const person = staffById(state, staffId)
   if (!person || Boolean(person.grants[permissionId]) === granted) return state
@@ -1435,8 +1878,8 @@ function setPermission(state: AppState, staffId: string, permissionId: Permissio
   }
   if (permissionId === 'desktop.control') {
     message = granted
-      ? `You granted ${person.name} permission to request desktop control. No session started. This build has no desktop agent, so the computer was not viewed or controlled.`
-      : `You revoked desktop control for ${person.name}. No session was active.`
+      ? `You granted ${person.name} permission to request desktop control. Start a desktop session on Integrations before they can use the computer.`
+      : `You revoked desktop control for ${person.name}.${state.desktop.sessionActive ? ' End the session if you want the pointer locked again.' : ''}`
   }
   return withEvent(next, now, {
     actorId: 'owner',
@@ -1608,12 +2051,283 @@ function chatMessage(now: number, message: Omit<ChatMessage, 'id' | 'at'>): Chat
   return { id: uid('chat'), at: iso(now), ...message, mentions: message.mentions ?? [] }
 }
 
+function readThread(state: AppState, threadId: string, now: number): AppState {
+  const stamp = iso(now)
+  const threads = state.threads.map((thread) =>
+    thread.id === threadId && thread.ownerReadAt !== stamp ? { ...thread, ownerReadAt: stamp } : thread,
+  )
+  if (threads.every((thread, index) => thread === state.threads[index])) return state
+  return { ...state, threads }
+}
+
+function quorumThreadId(state: AppState, threadId?: string): string | undefined {
+  if (threadId && state.threads.some((item) => item.id === threadId && item.kind === 'quorum')) return threadId
+  const lastOwner = [...state.chat].reverse().find((message) => {
+    const thread = state.threads.find((item) => item.id === message.threadId)
+    return thread?.kind === 'quorum' && message.authorId === 'owner'
+  })
+  return lastOwner?.threadId ?? state.threads.find((item) => item.kind === 'quorum')?.id ?? QUORUM_THREAD
+}
+
+function editOwnerMessage(state: AppState, messageId: string, text: string, now: number): AppState {
+  const body = text.trim()
+  const index = state.chat.findIndex((item) => item.id === messageId && item.authorId === 'owner')
+  const current = index >= 0 ? state.chat[index] : undefined
+  if (!current || !body) return state
+  const chat = state.chat.filter((item, at) => {
+    if (item.id === messageId) return false
+    if (item.threadId === current.threadId && at > index) return false
+    return true
+  })
+  chat.splice(index, 0, { ...current, text: body.slice(0, 8000), at: iso(now) })
+  const previousTitle = titleFromAsk(current.text)
+  const first = chat.find((item) => item.threadId === current.threadId && item.authorId === 'owner')
+  const threads = first
+    ? state.threads.map((thread) => {
+        if (thread.id !== current.threadId || thread.kind !== 'quorum') return thread
+        if (thread.name !== 'Quorum' && thread.name !== 'New chat' && thread.name !== previousTitle) return thread
+        return { ...thread, name: titleFromAsk(first.text) }
+      })
+    : state.threads
+  return { ...state, chat, threads }
+}
+
+function retryQuorum(state: AppState, threadId: string): AppState {
+  const last = [...state.chat].reverse().find((item) => item.threadId === threadId)
+  if (!last || last.authorId !== 'quorum') return state
+  return { ...state, chat: state.chat.filter((item) => item.id !== last.id) }
+}
+
+function renameQuorumChat(state: AppState, threadId: string, name: string): AppState {
+  const next = name.trim().replace(/\s+/g, ' ').slice(0, 80)
+  if (!next) return state
+  const thread = state.threads.find((item) => item.id === threadId && item.kind === 'quorum')
+  if (!thread || thread.name === next) return state
+  return {
+    ...state,
+    threads: state.threads.map((item) => (item.id === threadId ? { ...item, name: next } : item)),
+  }
+}
+
+function deleteQuorumChat(state: AppState, threadId: string): AppState {
+  const thread = state.threads.find((item) => item.id === threadId && item.kind === 'quorum')
+  if (!thread) return state
+  const dropped = new Set(state.chat.filter((item) => item.threadId === threadId).map((item) => item.id))
+  const screen = state.quorumScreen
+  return {
+    ...state,
+    threads: state.threads.filter((item) => item.id !== threadId),
+    chat: state.chat.filter((item) => item.threadId !== threadId),
+    quorumAsk: state.quorumAsk?.threadId === threadId ? undefined : state.quorumAsk,
+    quorumScreen: screen?.kind === 'pdf' && dropped.has(screen.messageId) ? null : screen,
+  }
+}
+
+function newQuorumChat(state: AppState, id: string, now: number): AppState {
+  if (!id.startsWith('thread_quorum')) return state
+  if (state.threads.some((thread) => thread.id === id)) return state
+  if (emptyQuorumId(state)) return state
+  const thread = {
+    id,
+    kind: 'quorum' as const,
+    name: 'New chat',
+    memberIds: [] as string[],
+    createdAt: iso(now),
+    ownerReadAt: iso(now),
+  }
+  const at = state.threads.findIndex((item) => item.kind === 'company')
+  const threads = [...state.threads]
+  threads.splice(at >= 0 ? at + 1 : 0, 0, thread)
+  return { ...state, threads }
+}
+
+function quorumSay(state: AppState, text: string, now: number, threadId?: string): AppState {
+  const id = quorumThreadId(state, threadId)
+  const thread = state.threads.find((item) => item.id === id)
+  const parsed = parseDocument(text)
+  const document = parsed.document && state.company
+    ? { ...parsed.document, body: withWriter(parsed.document.body, state.company) }
+    : parsed.document
+  const body = withoutMarks(parsed.text).trim()
+  const display = body || (document ? `Here is the ${document.kind}.` : '')
+  if (!thread || thread.kind !== 'quorum' || !display) return state
+  return {
+    ...state,
+    chat: [
+      ...state.chat,
+      chatMessage(now, {
+        threadId: thread.id,
+        authorId: 'quorum',
+        authorName: 'Quorum',
+        text: display.slice(0, 8000),
+        mentions: [],
+        document,
+      }),
+    ],
+  }
+}
+
+function makeQuorumPdf(state: AppState, messageId: string, now: number): AppState {
+  const message = state.chat.find((item) => item.id === messageId)
+  if (!message || !state.company) return state
+  const parsed = documentOf(message, state.company)
+  const body = parsed?.body || withWriter(message.text, state.company)
+  if (body.trim().length < 40) return state
+  const title = parsed?.title || 'Proposal'
+  const kind = parsed?.kind || 'proposal'
+  const bytes = proposalPdf({
+    title,
+    kind,
+    body,
+    brand: state.company.name,
+    writerName: state.company.ownerName,
+    writerTitle: state.company.ownerTitle,
+    website: state.company.website,
+    preparedFor: parsed?.preparedFor,
+    date: iso(now).slice(0, 10),
+  })
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48)
+  const file = {
+    name: `${slug || 'document'}.pdf`,
+    mime: 'application/pdf',
+    dataUrl: pdfDataUrl(bytes),
+  }
+  const document = { kind, title, body, preparedFor: parsed?.preparedFor }
+  return {
+    ...state,
+    chat: state.chat.map((item) => (item.id === messageId ? { ...item, file, document } : item)),
+    quorumScreen: { kind: 'pdf', messageId, title },
+  }
+}
+
+function editQuorumDocument(state: AppState, messageId: string, body: string, title?: string): AppState {
+  const message = state.chat.find((item) => item.id === messageId)
+  if (!message || !state.company) return state
+  const parsed = documentOf(message, state.company)
+  const nextBody = withWriter(body, state.company).slice(0, 12000)
+  if (!nextBody) return state
+  const document = {
+    kind: parsed?.kind || 'proposal',
+    title: (title ?? parsed?.title ?? 'Proposal').trim().slice(0, 120) || 'Proposal',
+    body: nextBody,
+    preparedFor: parsed?.preparedFor,
+  }
+  return {
+    ...state,
+    chat: state.chat.map((item) =>
+      item.id === messageId ? { ...item, document, file: undefined } : item,
+    ),
+    quorumScreen:
+      state.quorumScreen?.kind === 'pdf' && state.quorumScreen.messageId === messageId
+        ? null
+        : state.quorumScreen,
+  }
+}
+
+function askQuorumDesktop(
+  state: AppState,
+  reason: string,
+  prompt: string,
+  now: number,
+  threadId?: string,
+  steps?: string[],
+): AppState {
+  const why = reason.trim().slice(0, 180)
+  const asked = prompt.trim().slice(0, 800)
+  if (!why) return state
+  if (state.quorumAsk?.status === 'pending' && state.quorumAsk.reason === why) return state
+  const trail = (steps ?? state.quorumAsk?.steps ?? []).map((line) => line.slice(0, 180)).slice(0, 80)
+  return {
+    ...state,
+    quorumAsk: {
+      reason: why,
+      prompt: asked,
+      status: 'pending',
+      at: iso(now),
+      threadId: quorumThreadId(state, threadId ?? state.quorumAsk?.threadId),
+      steps: trail.length ? trail : undefined,
+    },
+    desktop: { ...state.desktop, grantedQuorum: undefined },
+  }
+}
+
+function setQuorumScreen(state: AppState, screen: AppState['quorumScreen']): AppState {
+  if (!screen) {
+    if (!state.quorumScreen) return state
+    return { ...state, quorumScreen: null }
+  }
+  if (screen.kind === 'page') {
+    const url = screen.url.trim().slice(0, 500)
+    if (!/^https?:\/\//i.test(url)) return state
+    return {
+      ...state,
+      quorumScreen: {
+        kind: 'page',
+        url,
+        title: screen.title?.slice(0, 120),
+        image: screen.image?.startsWith('http') ? screen.image.slice(0, 500) : undefined,
+        summary: screen.summary?.slice(0, 800),
+      },
+    }
+  }
+  if (screen.kind === 'pdf') {
+    const messageId = screen.messageId.trim()
+    if (!messageId) return state
+    return { ...state, quorumScreen: { kind: 'pdf', messageId, title: screen.title?.slice(0, 120) } }
+  }
+  const src = screen.src.trim()
+  if (!src) return state
+  if (src.startsWith('data:image/') && src.length > 400_000) return state
+  if (!src.startsWith('data:image/') && !src.startsWith('http')) return state
+  return {
+    ...state,
+    quorumScreen: {
+      kind: 'image',
+      src: src.slice(0, 400_000),
+      caption: screen.caption?.slice(0, 160),
+      made: screen.made,
+    },
+  }
+}
+
+function decideQuorumDesktop(state: AppState, decision: 'granted' | 'declined', now: number): AppState {
+  const ask = state.quorumAsk
+  if (!ask || ask.status !== 'pending') return state
+  if (decision === 'declined') {
+    return {
+      ...state,
+      quorumAsk: { ...ask, status: 'declined' },
+      desktop: { ...state.desktop, grantedQuorum: undefined },
+    }
+  }
+  if (!state.desktop.sessionActive) return state
+  return {
+    ...state,
+    quorumAsk: { ...ask, status: 'granted', at: iso(now) },
+    desktop: { ...state.desktop, grantedQuorum: true, grantedStaffId: undefined, grantedTaskId: undefined },
+  }
+}
+
+function finishQuorumDesktop(state: AppState, now: number): AppState {
+  if (!state.quorumAsk && !state.desktop.grantedQuorum) return state
+  return {
+    ...state,
+    quorumAsk: state.quorumAsk ? { ...state.quorumAsk, status: 'done', at: iso(now) } : undefined,
+    desktop: { ...state.desktop, grantedQuorum: undefined },
+  }
+}
+
 function sendMessage(state: AppState, threadId: string, text: string, now: number, wake = true): AppState {
   const thread = state.threads.find((item) => item.id === threadId)
   const body = text.trim()
   if (!thread || !body) return state
-  let mentions = wake ? mentionsIn(body, state.staff, thread.memberIds) : []
-  if (wake && thread.kind === 'direct') {
+  const alert = wake && thread.kind !== 'quorum'
+  let mentions = alert ? mentionsIn(body, state.staff, thread.memberIds) : []
+  if (alert && thread.kind === 'direct') {
     const personId = thread.memberIds[0]
     if (personId && !mentions.includes(personId)) mentions = [personId, ...mentions]
   }
@@ -1624,7 +2338,13 @@ function sendMessage(state: AppState, threadId: string, text: string, now: numbe
     text: body,
     mentions,
   })
-  const next = { ...state, chat: [...state.chat, message] }
+  const taught = lessonFromOwner(body)
+  let threads = state.threads
+  if (thread.kind === 'quorum' && !state.chat.some((item) => item.threadId === thread.id && item.authorId === 'owner')) {
+    const name = titleFromAsk(body)
+    threads = state.threads.map((item) => (item.id === thread.id ? { ...item, name } : item))
+  }
+  const next = learn({ ...state, threads, chat: [...state.chat, message] }, now, 'fact', taught ?? '')
   if (mentions.length === 0) return next
   const names = mentions
     .map((id) => state.staff.find((person) => person.id === id)?.name)
@@ -1648,6 +2368,7 @@ function createGroup(state: AppState, id: string, name: string, memberIds: strin
     name: title,
     memberIds: members,
     createdAt: iso(now),
+    ownerReadAt: iso(now),
   }
   return withEvent(
     { ...state, threads: [state.threads[0], thread, ...state.threads.slice(1)].filter((item): item is NonNullable<typeof item> => Boolean(item)) },
@@ -1712,7 +2433,7 @@ function agentMessage(
   let scheduled = calendarId.trim()
   if (!person || !thread || !body) return state
   if ((brief || scheduled) && roleKeyOf(state, person) === 'graphic_designer' && state.designs.some((design) => design.status === 'in_review')) {
-    body = 'I’m still waiting on your review of the graphic in the company chat before I start another one.'
+    body = 'I’m still waiting on a review of the graphic I already sent before I start another one.'
     brief = ''
     scheduled = ''
   }
@@ -1733,23 +2454,44 @@ function agentMessage(
   if (!brief && !scheduled) return next
   const designer = designerOf(next)
   if (!designer || designer.id !== person.id) return next
-  return requestDesign(next, brief, now + 1, scheduled || undefined)
+  return requestDesign(next, brief, now + 1, scheduled || undefined, undefined)
 }
 
-function planCalendar(state: AppState, now: number): AppState {
+function planCalendar(state: AppState, now: number, drafts?: CalendarDraft[]): AppState {
   const planner = state.staff.find((person) => roleKeyOf(state, person) === 'marketing_manager' && isStaffActive(state, person))
   if (!planner || !state.company) return state
   const products = state.products.length > 0 ? state.products : offeringsFromGoals(state.company)
-  const drafted = planMissing(products, state.calendar, state.clock.day)
+  const drafted = drafts && drafts.length > 0 ? drafts : planMissing(products, state.calendar, state.clock.day)
   if (drafted.length === 0) return state
-  const posts: CalendarPost[] = drafted.map((post) => ({ ...post, id: uid('cal'), status: 'planned' }))
+  const posts: CalendarPost[] = drafted.map((post) => ({ ...post, id: uid('cal'), status: 'planned' as const }))
+  const month = monthNameForDay(state.clock.day)
   const text = calendarSummary(products, posts, state.clock.day)
+  const pdfBody = calendarDocument({
+    company: state.company.name,
+    businessType: state.company.businessType,
+    planner: planner.name,
+    month,
+    products,
+    posts,
+    startDay: state.clock.day,
+  })
+  const bytes = documentPdf({
+    title: `${state.company.name} — ${month} content calendar`,
+    brand: state.company.name,
+    lines: pdfBody.split('\n'),
+  })
+  const fileName = `${state.company.name.replace(/\s+/g, '-').toLowerCase()}-${month.toLowerCase()}-content-calendar.pdf`
   const message = chatMessage(now, {
     threadId: COMPANY_THREAD,
     authorId: planner.id,
     authorName: planner.name,
-    text,
+    text: `${text}\n\nI attached the full ${month} calendar PDF with weekdays, formats, and sizes.`,
     mentions: [],
+    file: {
+      name: fileName,
+      mime: 'application/pdf',
+      dataUrl: pdfDataUrl(bytes),
+    },
   })
   return withEvent(
     {
@@ -1767,18 +2509,18 @@ function planCalendar(state: AppState, now: number): AppState {
       kind: 'result',
       staffId: planner.id,
       audit: true,
-      message: `${planner.name} wrote a content calendar for ${products.length} product${products.length === 1 ? '' : 's'}. Nothing was posted.`,
+      message: `${planner.name} wrote the ${month} content calendar (${posts.length} posts) and filed the PDF in chat. Nothing was posted.`,
     },
   )
 }
 
-function posterShape(format: PostFormat | undefined): PosterShape {
-  if (format === 'cover') return 'portrait'
-  if (format === 'thumbnail') return 'landscape'
-  return 'square'
-}
-
-function requestDesign(state: AppState, brief: string, now: number, calendarId?: string): AppState {
+function requestDesign(
+  state: AppState,
+  brief: string,
+  now: number,
+  calendarId?: string,
+  forcedAudience?: DesignAudience,
+): AppState {
   const designer = designerOf(state)
   if (!designer) return state
   const post = calendarId ? state.calendar.find((item) => item.id === calendarId && item.status === 'planned') : undefined
@@ -1791,39 +2533,64 @@ function requestDesign(state: AppState, brief: string, now: number, calendarId?:
       kind: 'task',
       staffId: designer.id,
       audit: true,
-      message: `${designer.name} is still waiting on your review of “${open.title}” in the group chat.`,
+      message: `${designer.name} is still waiting on your review of “${open.title}”.`,
     })
   }
   const product = post ? state.products.find((item) => item.id === post.productId) : undefined
-  const text = post?.brief || brief.trim() || 'Dock Pro and Classroom OS'
+  const text = post?.brief || brief.trim() || (state.company?.name ?? 'Quorum')
   const title = post?.title || (text.length > 28 ? `${text.slice(0, 27)}…` : text)
-  const where = post ? `${platformLabel(post.platform)} · ${formatLabel(post.format)}` : 'Draft for review'
+  const brand = state.company?.name ?? 'Quorum'
+  const audience = forcedAudience ?? designAudience(text, post?.id)
+  const internal = audience === 'internal'
   const marketer = marketingManager(state)
-  const reviewer = state.settings.marketingReviews !== false && marketer ? 'marketing' : 'owner'
+  const reviewer = internal ? 'owner' : state.settings.marketingReviews !== false && marketer ? 'marketing' : 'owner'
   const revision = (state.designs ?? []).length + 1
+  const format = post?.format ?? 'flyer'
+  const platform = internal ? undefined : post?.platform
+  const destination = accountFor(state.company?.social, platform)
+  const reviewThread = internal ? directThreadId(designer.id) : COMPANY_THREAD
   const design: Design = {
     id: uid('design'),
     title,
     brief: text,
-    caption: post
-      ? `${text} For ${platformLabel(post.platform)}. Awaiting review before anything is scheduled.`
-      : `${text}. Made for ${state.company?.name ?? 'the company'}. Awaiting review before anything is scheduled.`,
+    caption: internal
+      ? `${text}. In-house only. Awaiting your approval in this chat before it goes to the company group. It will not go to social.`
+      : post
+        ? `${text} For ${platformLabel(post.platform)}${destination ? ` (${destination})` : ''}. Awaiting review before anything is scheduled.`
+        : `${text}. Promotional graphic for ${brand}. Awaiting review before anything is scheduled.`,
+    audience,
+    threadId: reviewThread,
     reviewer,
-    svg: campaignPoster(title, where, revision, state.company?.name ?? 'Quorum', posterShape(post?.format)),
+    productName: product?.name,
+    fact: product?.fact,
+    artStatus: 'pending',
+    svg: composePoster({
+      title,
+      brief: text,
+      brand,
+      productName: product?.name,
+      fact: product?.fact || (internal ? text : undefined),
+      platform,
+      format,
+      revision,
+      kicker: internal ? 'Internal · Flyer' : undefined,
+    }),
     createdById: designer.id,
     status: 'in_review',
     revision,
     calendarId: post?.id,
-    platform: post?.platform,
-    format: post?.format,
+    platform,
+    format,
   }
   const message = chatMessage(now, {
-    threadId: COMPANY_THREAD,
+    threadId: reviewThread,
     authorId: designer.id,
     authorName: designer.name,
-    text: post
-      ? `Finished the ${formatLabel(post.format)} for “${product?.name ?? title}”. It is the ${platformLabel(post.platform)} post. ${reviewer === 'marketing' && marketer ? `${marketer.name} will look at it first.` : 'Please review it before it goes anywhere.'}`
-      : `Finished the graphic for “${text}”. ${reviewer === 'marketing' && marketer ? `${marketer.name} will look at it first.` : 'Please review it before it goes to social.'}`,
+    text: internal
+      ? `Here’s the in-house flyer for “${title}”. Please approve it here. After you approve it, I’ll put it in the company group. It will not go to Instagram or any social account.`
+      : post
+        ? `Finished the ${formatLabel(post.format)} for “${product?.name ?? title}”. It is the ${platformLabel(post.platform)} post${destination ? ` for ${destination}` : ''}. ${reviewer === 'marketing' && marketer ? `${marketer.name} will look at it first.` : 'Please review it before it goes anywhere.'}`
+        : `Finished the promotional graphic for “${text}”. ${reviewer === 'marketing' && marketer ? `${marketer.name} will look at it first.` : 'Please review it before it can go to social.'}`,
     designId: design.id,
     mentions: [],
   })
@@ -1839,9 +2606,11 @@ function requestDesign(state: AppState, brief: string, now: number, calendarId?:
       kind: 'result',
       staffId: designer.id,
       audit: true,
-      message: post
-        ? `${designer.name} sent the ${platformLabel(post.platform)} ${formatLabel(post.format)} to the group chat. Nothing has been posted.`
-        : `${designer.name} sent a graphic to the group chat for review. Nothing has been posted.`,
+      message: internal
+        ? `${designer.name} sent an in-house flyer to your direct chat for approval. It will not go to social.`
+        : post
+          ? `${designer.name} sent the ${platformLabel(post.platform)} ${formatLabel(post.format)} to the group chat. Nothing has been posted.`
+          : `${designer.name} sent a promotional graphic to the group chat for review. Nothing has been posted.`,
     },
   )
 }
@@ -1873,6 +2642,10 @@ function setMarketingReview(state: AppState, enabled: boolean, now: number): App
   )
 }
 
+function reviewThreadOf(design: Design, designer: Staff): string {
+  return design.threadId || (design.audience === 'internal' ? directThreadId(designer.id) : COMPANY_THREAD)
+}
+
 function reviewDesign(
   state: AppState,
   designId: string,
@@ -1886,9 +2659,11 @@ function reviewDesign(
   if (!design || design.status !== 'in_review' || !designer) return state
   const owner = ownerName(state)
   const marketer = marketingManager(state)
-  if (by === 'marketing' && !marketer) return state
+  const internal = design.audience === 'internal'
+  const reviewThread = reviewThreadOf(design, designer)
+  if (by === 'marketing' && (internal || !marketer)) return state
   if (decision === 'declined') {
-    if (by !== 'marketing' || !marketer) return state
+    if (by !== 'marketing' || !marketer || internal) return state
     const reason = note.trim() || 'I am declining this graphic.'
     const declined: Design = { ...design, status: 'declined' }
     const message = chatMessage(now, {
@@ -1919,7 +2694,7 @@ function reviewDesign(
       },
     )
   }
-  if (by === 'marketing' && decision === 'approved' && marketer) {
+  if (by === 'marketing' && decision === 'approved' && marketer && !internal) {
     const passed: Design = { ...design, reviewer: 'owner' }
     const message = chatMessage(now, {
       threadId: COMPANY_THREAD,
@@ -1951,18 +2726,38 @@ function reviewDesign(
   if (decision === 'changes') {
     const ask = note.trim() || 'Please revise the layout.'
     const nextRevision = design.revision + 1
+    const brand = state.company?.name ?? 'Quorum'
     const revised: Design = {
       ...design,
       id: uid('design'),
-      svg: campaignPoster(design.title, ask, nextRevision, state.company?.name ?? 'Quorum', posterShape(design.format)),
+      art: undefined,
+      artStatus: 'pending',
+      direction: ask,
+      threadId: reviewThread,
+      audience: design.audience ?? (internal ? 'internal' : 'promotional'),
+      svg: composePoster({
+        title: design.title,
+        brief: design.brief,
+        brand,
+        productName: design.productName,
+        fact: design.fact,
+        platform: design.platform,
+        format: design.format,
+        revision: nextRevision,
+        note: ask,
+      }),
       caption: `${design.brief}. Revised after review: ${ask}`,
       status: 'in_review',
       revision: nextRevision,
-      reviewer: by === 'marketing' || (state.settings.marketingReviews !== false && marketer) ? 'marketing' : 'owner',
+      reviewer: internal
+        ? 'owner'
+        : by === 'marketing' || (state.settings.marketingReviews !== false && marketer)
+          ? 'marketing'
+          : 'owner',
     }
-    const editor = by === 'marketing' && marketer ? marketer : null
+    const editor = by === 'marketing' && marketer && !internal ? marketer : null
     const ownerNote = chatMessage(now, {
-      threadId: COMPANY_THREAD,
+      threadId: reviewThread,
       authorId: editor?.id ?? 'owner',
       authorName: editor?.name ?? owner,
       text: editor ? `Please change “${design.title}”: ${ask}` : `Changes requested: ${ask}`,
@@ -1970,7 +2765,7 @@ function reviewDesign(
       mentions: [],
     })
     const reply = chatMessage(now + 1, {
-      threadId: COMPANY_THREAD,
+      threadId: reviewThread,
       authorId: designer.id,
       authorName: designer.name,
       text: `Revised “${design.title}” and sent the new version for review.`,
@@ -1981,7 +2776,7 @@ function reviewDesign(
       {
         ...state,
         designs: [revised, ...state.designs.map((item) => (item.id === design.id ? { ...item, status: 'changes' as const } : item))],
-        calendar: pointCalendar(state.calendar, design, revised.id, 'in_review'),
+        calendar: internal ? state.calendar : pointCalendar(state.calendar, design, revised.id, 'in_review'),
         chat: [...state.chat, ownerNote, reply],
       },
       now,
@@ -1993,18 +2788,65 @@ function reviewDesign(
         audit: true,
         message: editor
           ? `${editor.name} asked ${designer.name} to revise “${design.title}”.`
-          : `You asked ${designer.name} to revise “${design.title}”. It is back in the group chat.`,
+          : `You asked ${designer.name} to revise “${design.title}”.`,
+      },
+    )
+  }
+  if (internal) {
+    const approved: Design = {
+      ...design,
+      status: 'approved',
+      caption: `${design.brief}. Approved for the company group. In-house only — not for social.`,
+    }
+    const ownerNote = chatMessage(now, {
+      threadId: reviewThread,
+      authorId: 'owner',
+      authorName: owner,
+      text: `Approved “${design.title}” for the company group. It stays in-house.`,
+      designId: design.id,
+      mentions: [],
+    })
+    const published = chatMessage(now + 1, {
+      threadId: COMPANY_THREAD,
+      authorId: designer.id,
+      authorName: designer.name,
+      text: `Approved in-house flyer: “${design.title}”. For staff only — not for Instagram or any social account.`,
+      designId: design.id,
+      mentions: [],
+    })
+    return withEvent(
+      {
+        ...state,
+        designs: state.designs.map((item) => (item.id === design.id ? approved : item)),
+        chat: [...state.chat, ownerNote, published],
+      },
+      now,
+      {
+        actorId: 'owner',
+        actorName: owner,
+        kind: 'approval',
+        staffId: designer.id,
+        audit: true,
+        message: `You approved the in-house flyer “${design.title}” and it went to the company group. It was not sent to social.`,
       },
     )
   }
   const social = socialOf(state)
   const channel = design.platform ? platformLabel(design.platform) : 'social'
+  const destination = accountFor(state.company?.social, design.platform)
   const approved: Design = {
     ...design,
     status: 'held',
-    caption: design.platform
-      ? `${design.brief} Approved for ${channel} and held in Quorum until that account is connected.`
-      : `${design.brief}. Approved for social and held in Quorum until a social account is connected.`,
+    caption:
+      design.platform === 'instagram'
+        ? destination
+          ? `${design.brief} Approved for Instagram (${destination}). Ready to publish when the Graph API line is connected.`
+          : `${design.brief} Approved for Instagram. Ready to publish when the Graph API line is connected.`
+        : destination
+          ? `${design.brief} Approved for ${channel}. Filed for ${destination}.`
+          : design.platform
+            ? `${design.brief} Approved for ${channel} and held in Quorum until that account is connected.`
+            : `${design.brief}. Approved for social and held in Quorum until a social account is connected.`,
   }
   const ownerNote = chatMessage(now, {
     threadId: COMPANY_THREAD,
@@ -2019,9 +2861,16 @@ function reviewDesign(
         threadId: COMPANY_THREAD,
         authorId: social.id,
         authorName: social.name,
-        text: design.platform
-          ? `I have the approved ${formatLabel(design.format ?? 'flyer')} for ${channel}. Caption: “${approved.caption}” ${channel} is not connected, so this stays in Quorum and nothing was posted.`
-          : `I have the approved graphic and the caption is ready: “${approved.caption}” Social accounts are not connected, so this stays in Quorum and nothing was posted.`,
+        text:
+          design.platform === 'instagram'
+            ? destination
+              ? `I have the approved ${formatLabel(design.format ?? 'flyer')} for Instagram (${destination}). Caption: “${approved.caption}” I’ll publish it on Instagram when the Graph API line is connected on this server.`
+              : `I have the approved ${formatLabel(design.format ?? 'flyer')} for Instagram. Caption: “${approved.caption}” I’ll publish it on Instagram when the Graph API line is connected on this server.`
+            : destination
+              ? `I have the approved ${formatLabel(design.format ?? 'flyer')} for ${channel} (${destination}). Caption: “${approved.caption}” It is filed for that account. Nothing was published on ${channel}.`
+              : design.platform
+                ? `I have the approved ${formatLabel(design.format ?? 'flyer')} for ${channel}. Caption: “${approved.caption}” ${channel} is not connected, so this stays in Quorum and nothing was posted.`
+                : `I have the approved graphic and the caption is ready: “${approved.caption}” Social accounts are not connected, so this stays in Quorum and nothing was posted.`,
         designId: design.id,
         mentions: [],
       })
@@ -2047,17 +2896,288 @@ function reviewDesign(
       kind: 'approval',
       staffId: social?.id,
       audit: true,
-      message: social
-        ? `${social.name} took the approved graphic. Social accounts are not connected, so it was not posted.`
-        : `You approved “${design.title}”. No social account is connected, so it was not posted.`,
+      message: destination
+        ? `${social?.name ?? owner} filed the approved graphic for ${channel} at ${destination}. It stays in Quorum.`
+        : social
+          ? `${social.name} took the approved promotional graphic. Social accounts are not connected, so it was not posted.`
+          : `You approved “${design.title}”. No social account is connected, so it was not posted.`,
     },
   )
+}
+
+const ART_MAX = 400_000
+
+function setDesignArt(state: AppState, designId: string, image: string): AppState {
+  const design = (state.designs ?? []).find((item) => item.id === designId)
+  if (!design) return state
+  if (design.artStatus === 'ready' && design.art) return state
+  const art = image.startsWith('data:image/') && image.length <= ART_MAX ? image : undefined
+  if (!art && design.artStatus === 'studio') return state
+  const next: Design = {
+    ...design,
+    art,
+    artStatus: art ? 'ready' : 'studio',
+    svg: composePoster({
+      title: design.title,
+      brief: design.brief,
+      brand: state.company?.name ?? 'Quorum',
+      productName: design.productName,
+      fact: design.fact,
+      platform: design.platform,
+      format: design.format,
+      revision: design.revision,
+      art,
+      kicker: design.audience === 'internal' ? 'Internal · Flyer' : undefined,
+    }),
+  }
+  return { ...state, designs: state.designs.map((item) => (item.id === design.id ? next : item)) }
 }
 
 function pointCalendar(calendar: CalendarPost[], design: Design, designId: string, status: CalendarPost['status']): CalendarPost[] {
   return calendar.map((post) =>
     post.id === design.calendarId || post.designId === design.id ? { ...post, designId, status } : post,
   )
+}
+
+function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHATSAPP_INBOUND' }>, now: number): AppState {
+  const company = state.company
+  const phone = command.phone.replace(/\D/g, '')
+  const text = command.text.trim().slice(0, 1000)
+  const messageId = command.messageId.trim()
+  if (!company || !phone || !text || !messageId) return state
+  const chats = state.whatsapp ?? []
+  if (chats.some((chat) => chat.messages.some((message) => message.id === messageId))) return state
+  const lane = clientLane(text)
+  const people = state.staff.map((person) => ({
+    id: person.id,
+    name: person.name,
+    title: person.title,
+    roleKey: state.roles.find((role) => role.id === person.roleId)?.key ?? '',
+    departmentId: person.departmentId,
+    active: isStaffActive(state, person),
+  }))
+  const person = lane.refused ? null : pickStaff(people, lane.keys)
+  const reply = clientReply(company.name, person, lane.refused)
+  const name = command.name.trim().slice(0, 80) || phone
+  const existing = chats.find((chat) => chat.id === phone)
+  const clientMessage: WaMessage = { id: messageId, at: iso(now), author: 'client', text, status: 'received' }
+  const replyMessage: WaMessage = {
+    id: `wa_${messageId}`.slice(0, 140),
+    at: iso(now, 1),
+    author: 'quorum',
+    text: reply,
+    status: command.linked ? 'queued' : 'held',
+  }
+  let next = state
+  let taskId = existing?.taskId ?? null
+  if (person) {
+    const prior = taskId ? taskOf(next, taskId) : null
+    const title = `WhatsApp: ${text}`.slice(0, 80)
+    if (prior && prior.assigneeId === person.id && prior.status !== 'done') {
+      next = patchTask(next, prior.id, now, { description: `${prior.description}\n${name}: ${text}`.slice(0, 2000) })
+      next = withEvent(next, now, {
+        actorId: 'quorum',
+        actorName: 'Quorum',
+        kind: 'task',
+        taskId: prior.id,
+        staffId: person.id,
+        audit: true,
+        message: `${name} sent a follow-up on WhatsApp for ${person.name}.`,
+      })
+      taskId = prior.id
+    } else {
+      taskId = uid('task')
+      const created: Task = {
+        id: taskId,
+        title,
+        description: `${name} (${phone}) on the company WhatsApp: ${text}`,
+        status: 'ready',
+        priority: lane.priority,
+        assigneeId: person.id,
+        departmentId: person.departmentId,
+        source: 'staff',
+        playbook: [
+          {
+            kind: 'work',
+            startDetail: `${person.name} is reading ${name}'s WhatsApp message.`,
+            doneDetail: `${person.name} filed the WhatsApp request. Nothing was sent back to the client from this desk.`,
+            durationMs: 60_000,
+          },
+        ],
+        stepIndex: 0,
+        stepStartedAt: null,
+        handoff: null,
+        blockers: [],
+        result: null,
+        consequential: null,
+        createdAt: iso(now),
+        updatedAt: iso(now),
+      }
+      next = { ...next, tasks: [created, ...next.tasks] }
+      next = withEvent(next, now, {
+        actorId: 'quorum',
+        actorName: 'Quorum',
+        kind: 'handoff',
+        taskId,
+        staffId: person.id,
+        audit: true,
+        message: `Quorum gave “${title}” to ${person.name} from WhatsApp.`,
+      })
+    }
+  }
+  const chat: WaChat = {
+    id: phone,
+    name: existing?.name && existing.name !== phone ? existing.name : name,
+    phone,
+    messages: [...(existing?.messages ?? []), clientMessage, replyMessage].slice(-80),
+    assigneeId: person?.id ?? existing?.assigneeId ?? null,
+    taskId,
+    updatedAt: iso(now),
+  }
+  return { ...next, whatsapp: [chat, ...chats.filter((item) => item.id !== phone)] }
+}
+
+function scrubOrphanWhatsApp(state: AppState): AppState {
+  const titles = new Set(state.tasks.map((task) => task.title))
+  const mentioned = (text: string) => /“(WhatsApp:[^”]+)”/.exec(text)?.[1]
+  const chat = state.chat.filter((message) => {
+    const title = mentioned(message.text)
+    return !title || titles.has(title)
+  })
+  const events = state.events.filter((event) => {
+    const title = mentioned(event.message)
+    return !title || titles.has(title)
+  })
+  if (chat.length === state.chat.length && events.length === state.events.length) return state
+  return { ...state, chat, events }
+}
+
+function dropWhatsApp(state: AppState, phone: string): AppState {
+  const digits = phone.replace(/\D/g, '')
+  const chat = (state.whatsapp ?? []).find((item) => item.phone === digits)
+  const taskIds = new Set(
+    state.tasks
+      .filter((task) => task.title.startsWith('WhatsApp:') && task.description.includes(digits) && task.status !== 'done')
+      .map((task) => task.id),
+  )
+  if (chat?.taskId) {
+    const linked = taskOf(state, chat.taskId)
+    if (linked && linked.status !== 'done') taskIds.add(linked.id)
+  }
+  if (!chat && taskIds.size === 0) return state
+  const titles = state.tasks.filter((task) => taskIds.has(task.id)).map((task) => task.title)
+  return {
+    ...state,
+    tasks: state.tasks.filter((task) => !taskIds.has(task.id)),
+    events: state.events.filter((event) => !event.taskId || !taskIds.has(event.taskId)),
+    chat: state.chat.filter((message) => !titles.some((title) => message.text.includes(title))),
+    whatsapp: (state.whatsapp ?? []).filter((item) => item.phone !== digits),
+  }
+}
+
+function instagramResult(
+  state: AppState,
+  designId: string,
+  status: 'published' | 'failed',
+  now: number,
+  error?: string,
+  mediaId?: string,
+): AppState {
+  const design = state.designs.find((item) => item.id === designId)
+  if (!design || design.audience === 'internal') return state
+  if (design.status === 'published' && status === 'published') return state
+  const social = socialOf(state)
+  const channel = design.platform ? platformLabel(design.platform) : 'Instagram'
+  if (status === 'failed') {
+    const note = (error ?? 'Instagram could not take that post.').slice(0, 280)
+    if (!social) return state
+    const message = chatMessage(now, {
+      threadId: COMPANY_THREAD,
+      authorId: social.id,
+      authorName: social.name,
+      text: `I could not publish “${design.title}” on Instagram. ${note} It stays held in Quorum.`,
+      designId: design.id,
+      mentions: [],
+    })
+    return withEvent(
+      { ...state, chat: [...state.chat, message] },
+      now,
+      {
+        actorId: social.id,
+        actorName: social.name,
+        kind: 'result',
+        staffId: social.id,
+        audit: true,
+        message: `${social.name} could not publish “${design.title}” on Instagram. ${note}`,
+      },
+    )
+  }
+  const published: Design = {
+    ...design,
+    status: 'published',
+    caption: `${design.brief} Published on Instagram${mediaId ? ` (${mediaId})` : ''}.`,
+  }
+  const records = (state.records ?? []).map((item) =>
+    item.kind === 'social' && item.title === design.title && item.status === 'held'
+      ? { ...item, status: 'filed' as const, body: `${item.body}\nPublished on Instagram${mediaId ? ` · ${mediaId}` : ''}.`.slice(0, 2000) }
+      : item,
+  )
+  const taken = social
+    ? chatMessage(now, {
+        threadId: COMPANY_THREAD,
+        authorId: social.id,
+        authorName: social.name,
+        text: `Published “${design.title}” on Instagram. Caption: “${design.brief}”`,
+        designId: design.id,
+        mentions: [],
+      })
+    : chatMessage(now, {
+        threadId: COMPANY_THREAD,
+        authorId: 'owner',
+        authorName: ownerName(state),
+        text: `“${design.title}” was published on Instagram.`,
+        designId: design.id,
+        mentions: [],
+      })
+  return withEvent(
+    {
+      ...state,
+      designs: state.designs.map((item) => (item.id === design.id ? published : item)),
+      calendar: pointCalendar(state.calendar, design, design.id, 'published'),
+      records,
+      chat: [...state.chat, taken],
+    },
+    now,
+    {
+      actorId: social?.id ?? 'owner',
+      actorName: social?.name ?? ownerName(state),
+      kind: 'result',
+      staffId: social?.id,
+      audit: true,
+      message: `${social?.name ?? 'Quorum'} published “${design.title}” on ${channel}.`,
+    },
+  )
+}
+
+function markWhatsAppDelivery(
+  state: AppState,
+  phone: string,
+  messageId: string,
+  status: 'sent' | 'held' | 'failed',
+  now: number,
+): AppState {
+  const digits = phone.replace(/\D/g, '')
+  let changed = false
+  const whatsapp = (state.whatsapp ?? []).map((chat) => {
+    if (chat.phone !== digits) return chat
+    const messages = chat.messages.map((message) => {
+      if (message.id !== messageId || message.status === status) return message
+      changed = true
+      return { ...message, status }
+    })
+    return { ...chat, messages, updatedAt: iso(now) }
+  })
+  return changed ? { ...state, whatsapp } : state
 }
 
 function withEvent(

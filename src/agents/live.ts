@@ -1,34 +1,47 @@
-import { LIVE_INSTRUCTIONS, LIVE_MODEL } from '../../server/openai-live'
+import { LIVE_CALLS_URL, LIVE_INSTRUCTIONS, LIVE_MODEL, liveSessionConfig } from '../../server/openai-live'
 import type { Staff } from '../types'
 import { liveVoiceName, staffVoice, type VoiceKind } from './staff-voice'
 
 export { liveVoiceName }
 
+const TRANSCRIPT_DONE = new Set([
+  'conversation.item.input_audio_transcription.completed',
+  'conversation.item.input_audio_transcription.done',
+])
+
 export function transcriptFromEvent(event: unknown): string | null {
-  const item = event as { type?: string; transcript?: string }
-  if (item.type !== 'conversation.item.input_audio_transcription.completed') return null
-  const text = item.transcript?.trim() ?? ''
-  return text || null
+  const item = event as {
+    type?: string
+    transcript?: string | { text?: string }
+    item?: { transcript?: string }
+  }
+  if (!item.type || !TRANSCRIPT_DONE.has(item.type)) return null
+  const text =
+    typeof item.transcript === 'string'
+      ? item.transcript
+      : item.transcript?.text ?? item.item?.transcript ?? ''
+  return text.trim() || null
 }
 
 export function speakMessages(text: string, voice: string, kind: VoiceKind): object[] {
   const line = text.replace(/\s+/g, ' ').trim().slice(0, 420)
   const gender = kind === 'woman' ? 'female' : 'male'
+  const spoken = `Speak respectfully in a ${gender} voice. Say this exactly and nothing else: ${line}`
   return [
     { type: 'response.cancel' },
     {
       type: 'session.update',
       session: {
-        voice,
+        type: 'realtime',
         instructions: `${LIVE_INSTRUCTIONS} Use a clear, respectful ${gender} voice. Say the following words exactly, then stop:\n${line}`,
+        audio: { output: { voice } },
       },
     },
     {
       type: 'response.create',
       response: {
-        modalities: ['audio'],
-        voice,
-        instructions: `Speak respectfully in a ${gender} voice. Say this exactly and nothing else: ${line}`,
+        output_modalities: ['audio'],
+        instructions: spoken,
       },
     },
   ]
@@ -59,11 +72,13 @@ export async function connectLiveVoice(input: {
 }): Promise<LiveVoice | null> {
   const token = await fetch('/api/realtime/session', { method: 'POST' })
   if (token.status === 503) return null
-  const session = (await token.json().catch(() => ({}))) as { clientSecret?: string; model?: string; error?: string }
-  if (!token.ok || !session.clientSecret) {
-    input.onError(session.error || 'Live voice is not available on this server.')
-    return null
+  const session = (await token.json().catch(() => ({}))) as {
+    clientSecret?: string
+    model?: string
+    realtimeUrl?: string
+    error?: string
   }
+  if (!token.ok || !session.clientSecret) return null
 
   const pc = new RTCPeerConnection()
   const audio = input.audioElement ?? new Audio()
@@ -89,10 +104,19 @@ export async function connectLiveVoice(input: {
     pending.push(payload)
   }
 
+  const drop = () => {
+    speaking?.resolve()
+    speaking = null
+    channel.close()
+    mic.getTracks().forEach((track) => track.stop())
+    pc.close()
+    audio.srcObject = null
+  }
+
   channel.onopen = () => {
     send({
       type: 'session.update',
-      session: { instructions: LIVE_INSTRUCTIONS, turn_detection: { type: 'server_vad', create_response: false } },
+      session: liveSessionConfig(session.model || LIVE_MODEL),
     })
     for (const item of pending) channel.send(JSON.stringify(item))
     pending.length = 0
@@ -108,7 +132,7 @@ export async function connectLiveVoice(input: {
     const row = parsed as { type?: string; error?: { message?: string } }
     const transcript = transcriptFromEvent(parsed)
     if (transcript) input.onTranscript(transcript)
-    if (row.type === 'session.updated') {
+    if (row.type === 'session.updated' || row.type === 'session.created') {
       sessionReady?.resolve()
       sessionReady = null
     }
@@ -121,20 +145,16 @@ export async function connectLiveVoice(input: {
 
   const offer = await pc.createOffer()
   await pc.setLocalDescription(offer)
-  const model = session.model || LIVE_MODEL
-  const sdp = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
+  const sdp = await fetch(session.realtimeUrl || LIVE_CALLS_URL, {
     method: 'POST',
     body: offer.sdp,
     headers: {
       Authorization: `Bearer ${session.clientSecret}`,
       'Content-Type': 'application/sdp',
-      'OpenAI-Beta': 'realtime=v1',
     },
   })
   if (!sdp.ok) {
-    mic.getTracks().forEach((track) => track.stop())
-    pc.close()
-    input.onError('OpenAI Live could not complete the voice connection.')
+    drop()
     return null
   }
   await pc.setRemoteDescription({ type: 'answer', sdp: await sdp.text() })
@@ -178,12 +198,7 @@ export async function connectLiveVoice(input: {
       })
     },
     close() {
-      speaking?.resolve()
-      speaking = null
-      channel.close()
-      mic.getTracks().forEach((track) => track.stop())
-      pc.close()
-      audio.srcObject = null
+      drop()
     },
   }
 }

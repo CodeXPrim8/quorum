@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import { businessTypePresets, departmentTemplates, roleTemplates } from '../domain/catalog'
+import { invalidSocial, normalizeSocial, type CompanySocial } from '../domain/social'
+import { normalizeWebsite } from '../domain/website'
+import { SocialFields } from './SocialFields'
 import type { Command, CompanyInput, OwnerGender } from '../types'
 
 export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
@@ -9,10 +12,11 @@ export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
   const [ownerName, setOwnerName] = useState('')
   const [ownerTitle, setOwnerTitle] = useState<'Chairman' | 'CEO'>('Chairman')
   const [ownerGender, setOwnerGender] = useState<OwnerGender | ''>('')
-  const [goal, setGoal] = useState('')
-  const [appointMd, setAppointMd] = useState(true)
+  const [website, setWebsite] = useState('')
+  const [social, setSocial] = useState<CompanySocial>({})
   const [departments, setDepartments] = useState<string[]>(departmentTemplates.map((item) => item.key))
   const [roles, setRoles] = useState<string[]>(roleTemplates.map((item) => item.key))
+  const [openRole, setOpenRole] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   function toggle(list: string[], key: string, set: (next: string[]) => void) {
@@ -20,57 +24,48 @@ export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
   }
 
   function create() {
-    if (!name.trim() || !goal.trim() || !ownerName.trim() || !ownerGender) {
-      setError('Add a company name, your name, whether you are a woman or a man, and one goal.')
+    if (!name.trim() || !ownerName.trim() || !ownerGender) {
+      setError('Add a company name, your name, and your gender.')
+      return
+    }
+    if (website.trim() && !normalizeWebsite(website)) {
+      setError('Enter a website like example.com, or leave it blank.')
+      return
+    }
+    const badSocial = invalidSocial(social)
+    if (badSocial) {
+      setError('Enter a full social link, or leave it blank.')
       return
     }
     const input: CompanyInput = {
       name,
       businessType: businessType === 'Other' ? customType : businessType,
-      goals: [goal],
+      goals: [],
       ownerName,
       ownerTitle,
       ownerGender,
-      appointMd,
+      website: normalizeWebsite(website),
+      social: normalizeSocial(social),
+      appointMd: roles.includes('md'),
       enabledDepartmentKeys: departments,
-      enabledRoleKeys: appointMd ? roles : roles.filter((key) => key !== 'md'),
+      enabledRoleKeys: roles,
     }
     if (input.enabledDepartmentKeys.length === 0 || input.enabledRoleKeys.length === 0) {
-      setError('Activate at least one department and one role, or open the sample company.')
+      setError('Choose at least one department and one role.')
       return
     }
     dispatch({ type: 'CREATE_COMPANY', input })
     window.location.hash = '#/overview'
   }
 
-  const visibleRoles = roleTemplates.filter((role) => {
-    if (role.key === 'md' && !appointMd) return false
-    return departments.includes(role.departmentKey)
-  })
+  const visibleRoles = roleTemplates.filter((role) => role.key === 'md' || departments.includes(role.departmentKey))
 
   return (
     <div className="setup">
       <section className="setup-hero">
         <p className="eyebrow">Quorum</p>
-        <h1>Run the company from the chair.</h1>
-        <p>
-          Appoint AI executives, give them staff, and delegate work. The office moves when a task changes hands — and
-          stops when someone is waiting on you.
-        </p>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => {
-            dispatch({ type: 'LOAD_SAMPLE' })
-            window.location.hash = '#/overview'
-          }}
-        >
-          Open the Northline sample
-        </button>
-        <p className="fine">
-          Northline Supply Co. sells IT hardware, devices, and software. The cast, stock figures, and drafts are sample
-          data. With Supabase signed in, that company is saved to your account.
-        </p>
+        <h1>Set up the company.</h1>
+        <p>Tell Quorum who you are, then appoint the directors and managers who will run the day.</p>
       </section>
       <form
         className="setup-form panel"
@@ -79,7 +74,7 @@ export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
           create()
         }}
       >
-        <h2>Or create a company</h2>
+        <h2>The company</h2>
         <label>
           Company name
           <input value={name} onChange={(event) => setName(event.target.value)} required />
@@ -100,14 +95,14 @@ export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
           </label>
         </fieldset>
         <fieldset>
-          <legend>You are</legend>
+          <legend>Gender</legend>
           <label className="check">
             <input type="radio" name="ownerGender" checked={ownerGender === 'male'} onChange={() => setOwnerGender('male')} />
-            A man — staff address you as sir
+            Male
           </label>
           <label className="check">
             <input type="radio" name="ownerGender" checked={ownerGender === 'female'} onChange={() => setOwnerGender('female')} />
-            A woman — staff address you as ma
+            Female
           </label>
         </fieldset>
         <label>
@@ -125,47 +120,115 @@ export function Setup({ dispatch }: { dispatch: (command: Command) => void }) {
           </label>
         )}
         <label>
-          First goal
-          <input value={goal} onChange={(event) => setGoal(event.target.value)} required />
+          Company website
+          <input
+            value={website}
+            onChange={(event) => setWebsite(event.target.value)}
+            placeholder="example.com"
+            inputMode="url"
+            autoComplete="url"
+          />
         </label>
-        <label className="check">
-          <input type="checkbox" checked={appointMd} onChange={(event) => setAppointMd(event.target.checked)} />
-          Appoint an AI Managing Director
-        </label>
+        <SocialFields
+          values={social}
+          onChange={(network, value) => setSocial((current) => ({ ...current, [network]: value }))}
+        />
         <fieldset>
           <legend>Departments</legend>
-          {departmentTemplates.map((department) => (
-            <label key={department.key} className="check">
-              <input
-                type="checkbox"
-                checked={departments.includes(department.key)}
-                onChange={() => toggle(departments, department.key, setDepartments)}
-              />
-              {department.name}
-            </label>
-          ))}
+          <div className="pick-row">
+            {departmentTemplates.map((department) => {
+              const on = departments.includes(department.key)
+              return (
+                <button
+                  key={department.key}
+                  type="button"
+                  className={on ? 'pick on' : 'pick'}
+                  aria-pressed={on}
+                  onClick={() => toggle(departments, department.key, setDepartments)}
+                >
+                  {department.name}
+                </button>
+              )
+            })}
+          </div>
         </fieldset>
         <fieldset>
           <legend>Roles</legend>
-          {visibleRoles.map((role) => (
-            <label key={role.key} className="check">
-              <input type="checkbox" checked={roles.includes(role.key)} onChange={() => toggle(roles, role.key, setRoles)} />
-              <span>
-                {role.title}
-                <small>{role.purpose}</small>
-              </span>
-            </label>
-          ))}
+          <p className="fine">Tick a name to appoint them. Click the name to read the role.</p>
+          <div className="role-list">
+            {visibleRoles.map((role, index) => {
+              const department = departmentTemplates.find((item) => item.key === role.departmentKey)
+              const previous = visibleRoles[index - 1]
+              const showDepartment = department && previous?.departmentKey !== role.departmentKey
+              return (
+                <div key={role.key}>
+                  {showDepartment && <p className="role-dept">{department.name}</p>}
+                  <RolePick
+                    title={role.title}
+                    purpose={role.purpose}
+                    responsibilities={role.responsibilities}
+                    kpi={role.kpi}
+                    checked={roles.includes(role.key)}
+                    open={openRole === role.key}
+                    onToggle={() => toggle(roles, role.key, setRoles)}
+                    onOpen={() => setOpenRole((current) => (current === role.key ? null : role.key))}
+                  />
+                </div>
+              )
+            })}
+          </div>
         </fieldset>
         {error && <p className="form-error">{error}</p>}
         <button type="submit" className="btn btn-primary">
           Create company
         </button>
-        <p className="fine">
-          Roles are a starting library. Rename them, turn them off, or add your own after the company exists. New
-          people begin with least-privilege access from the role template.
-        </p>
+        <p className="fine">You can rename a role or add your own after the company exists.</p>
       </form>
+    </div>
+  )
+}
+
+function RolePick({
+  title,
+  purpose,
+  responsibilities,
+  kpi,
+  checked,
+  open,
+  onToggle,
+  onOpen,
+}: {
+  title: string
+  purpose: string
+  responsibilities: string[]
+  kpi: string
+  checked: boolean
+  open: boolean
+  onToggle: () => void
+  onOpen: () => void
+}) {
+  return (
+    <div className={open ? 'role-pick is-open' : 'role-pick'}>
+      <div className="role-pick-bar">
+        <input type="checkbox" checked={checked} onChange={onToggle} aria-label={`Appoint ${title}`} />
+        <button type="button" className="role-pick-name" aria-expanded={open} onClick={onOpen}>
+          <span>{title}</span>
+          <i aria-hidden="true" />
+        </button>
+      </div>
+      <div className="role-fold">
+        <div aria-hidden={open ? undefined : true}>
+          <p className="role-kpi">
+            <span>KPI</span> {kpi}
+          </p>
+          <p>{purpose}</p>
+          <ul>
+            {responsibilities.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   )
 }

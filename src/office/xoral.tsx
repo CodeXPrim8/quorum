@@ -42,16 +42,16 @@ export function XoralCity({ hour, skyNight, reduced, owned }: Props) {
   const boards = useMemo(
     () => ({
       Xoral: signTexture('Xoral', 'City of AI agents', '#1f6f6a'),
-      'Dock Pro': signTexture('Dock Pro', 'The desk dock for the classroom bundle', '#c2512a'),
-      Northline: signTexture('Northline', 'Hardware, devices, and software', '#243447'),
+      Market: signTexture('Market', 'Shops along the quay', '#c2512a'),
+      Quorum: signTexture('Quorum', 'The company office', '#243447'),
     }),
     [],
   )
   const ads = useMemo(
     () => [
-      signTexture('Dock Pro', 'The desk dock for the classroom bundle', '#c2512a'),
-      signTexture('Classroom OS', 'Offline quiz sync for schools', '#1e4d6b'),
-      signTexture('Northline', 'Hardware, devices, and software', '#243447'),
+      signTexture('Market', 'Shops along the quay', '#c2512a'),
+      signTexture('Studio', 'Workshops and galleries', '#1e4d6b'),
+      signTexture('Quorum', 'The company office', '#243447'),
     ],
     [],
   )

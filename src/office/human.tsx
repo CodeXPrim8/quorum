@@ -1,9 +1,10 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Html } from '@react-three/drei'
 import type { Group } from 'three'
-import { activityLabel, isTyping } from '../domain/selectors'
+import { isTyping } from '../domain/selectors'
+import { personGivenName } from '../domain/staff-names'
 import type { AppState, Staff } from '../types'
+import { NameBadge } from './name-badge'
 import { barSeats, cafeSeats, deskSlots, loungeSeats, meetingRing, positionAt, waterSpot } from './world'
 
 type Props = {
@@ -22,7 +23,6 @@ export function Human({ state, person, now, dim, onOpen }: Props) {
   const rightLeg = useRef<Group>(null)
   const cup = useRef<Group>(null)
   const phase = useRef(0)
-  const waiting = activityLabel(state, person, now).startsWith('Waiting')
   const typing = isTyping(state, person, now)
   const walkingNow = now < person.presence.movingUntil && person.presence.path.length > 1
 
@@ -130,7 +130,7 @@ export function Human({ state, person, now, dim, onOpen }: Props) {
   const skin = person.appearance.skin
   const shirt = person.appearance.shirt
   const legs = person.appearance.legs
-  const first = person.name.split(' ')[0]
+  const first = personGivenName(person)
   return (
     <group ref={ref} onClick={(event) => { event.stopPropagation(); onOpen() }}>
       <mesh position={[0, 0.98, 0]} castShadow>
@@ -204,16 +204,14 @@ export function Human({ state, person, now, dim, onOpen }: Props) {
           <meshStandardMaterial color="#1c1c1c" />
         </mesh>
       </group>
-      {person.presence.pose === 'call' && <Headset />}
-      {person.presence.pose === 'call' && !walkingNow && <Laptop />}
-      <Html position={[0, 1.62, 0]} center distanceFactor={16} style={{ pointerEvents: 'none' }}>
-        <div className={dim ? 'nameplate is-dim' : waiting ? 'nameplate needs' : 'nameplate'}>{first}</div>
-      </Html>
+      {person.presence.pose === 'call' && <CallHeadset />}
+      {person.presence.pose === 'call' && !walkingNow && <CallLaptop />}
+      <NameBadge name={first} dim={dim} />
     </group>
   )
 }
 
-function Headset() {
+export function CallHeadset() {
   return (
     <group>
       <mesh position={[-0.14, 1.29, 0]} rotation={[0, 0, Math.PI / 2]}>
@@ -236,7 +234,7 @@ function Headset() {
   )
 }
 
-function Laptop() {
+export function CallLaptop() {
   return (
     <group position={[0, 0.58, 0.28]}>
       <mesh rotation={[-0.08, 0, 0]}>

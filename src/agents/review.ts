@@ -8,6 +8,9 @@ export type GraphicVerdict = {
 
 /** What the marketing manager decides from the brief, the product fact, and the platform. */
 export function judgeGraphic(state: AppState, design: Design): GraphicVerdict {
+  if (design.audience === 'internal') {
+    return { decision: 'approved', note: '' }
+  }
   const post = state.calendar.find((item) => item.id === design.calendarId || item.designId === design.id)
   const product = state.products.find((item) => item.id === post?.productId)
   const brief = design.brief.replace(/\s+/g, ' ').trim()

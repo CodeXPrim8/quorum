@@ -6,6 +6,29 @@ export type ModelLink = {
   apiKey: string
 }
 
+export type ModelContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+export type ModelMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string | ModelContentPart[]
+}
+
+/** Use the Grok key kept on this computer, without copying it into the browser. */
+export async function loadServerModel(): Promise<ModelLink | null> {
+  try {
+    const response = await fetch('/api/model/link')
+    const data = (await response.json()) as { linked?: boolean; baseUrl?: string; model?: string }
+    if (!data.linked || !data.baseUrl || !data.model) return readModelLink()
+    const link = { baseUrl: data.baseUrl, model: data.model, apiKey: 'server' }
+    saveModelLink(link)
+    return link
+  } catch {
+    return readModelLink()
+  }
+}
+
 export function readModelLink(): ModelLink | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -38,10 +61,14 @@ function clip(value: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-export async function askModel(
-  link: ModelLink,
-  messages: { role: 'system' | 'user' | 'assistant'; content: string }[],
-): Promise<string> {
+function clipContent(content: ModelMessage['content']): ModelMessage['content'] {
+  if (typeof content === 'string') return content.slice(0, 4000)
+  return content.map((part) =>
+    part.type === 'text' ? { ...part, text: part.text.slice(0, 4000) } : part,
+  )
+}
+
+export async function askModel(link: ModelLink, messages: ModelMessage[]): Promise<string> {
   const response = await fetch('/api/model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -49,7 +76,7 @@ export async function askModel(
       baseUrl: link.baseUrl,
       model: link.model,
       apiKey: link.apiKey,
-      messages: messages.map((message) => ({ role: message.role, content: message.content.slice(0, 4000) })),
+      messages: messages.map((message) => ({ role: message.role, content: clipContent(message.content) })),
     }),
   })
   const data = (await response.json().catch(() => ({}))) as {

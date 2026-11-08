@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { applyCommand, createSampleState } from '../engine/apply'
+import { applyCommand } from '../engine/apply'
+import { createSampleState } from '../engine/fixture'
 import { COMPANY_THREAD } from '../chat/threads'
 import { minutesPdf, pdfDataUrl } from '../lib/pdf'
 import { minutesDocument } from './minutes'

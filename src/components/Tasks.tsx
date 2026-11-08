@@ -5,7 +5,7 @@ import { canAdvanceTask, currentStep } from '../engine/apply'
 import { actionLabel } from '../engine/outcomes'
 import { activityLine, formatWhen } from '../lib/format'
 import { EmptyBlock } from './Shell'
-import type { AppState, Command, ConsequentialAction, Priority, TaskStatus } from '../types'
+import type { AppState, Command, ConsequentialAction, Priority, Task, TaskStatus } from '../types'
 
 const statuses: Array<TaskStatus | 'all'> = [
   'all',
@@ -135,7 +135,7 @@ export function Tasks({
                         <span>
                           <strong>{task.title}</strong>
                           <small>
-                            {statusLabel(task.status)} · {task.priority} · {owner?.name ?? 'Unassigned'}
+                            {statusLabel(task.status)} · {task.priority} · {owner?.name ?? 'Unassigned'} · {openedBy(state, task)}
                           </small>
                         </span>
                       </a>
@@ -254,6 +254,67 @@ function TaskForm({
   )
 }
 
+function openedBy(state: AppState, task: Task): string {
+  if (task.source === 'owner' || !task.createdById) return 'You'
+  return state.staff.find((person) => person.id === task.createdById)?.name ?? 'A manager'
+}
+
+function TaskEdit({
+  state,
+  task,
+  dispatch,
+}: {
+  state: AppState
+  task: Task
+  dispatch: (command: Command) => void
+}) {
+  const people = state.staff.filter((person) => isStaffActive(state, person))
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description)
+  const [priority, setPriority] = useState<Priority>(task.priority)
+  const [assigneeId, setAssigneeId] = useState(task.assigneeId ?? '')
+  return (
+    <form
+      className="stack"
+      onSubmit={(event) => {
+        event.preventDefault()
+        dispatch({ type: 'UPDATE_TASK', taskId: task.id, patch: { title, description, priority, assigneeId } })
+      }}
+    >
+      <h3>Edit</h3>
+      <label>
+        Title
+        <input value={title} onChange={(event) => setTitle(event.target.value)} required />
+      </label>
+      <label>
+        Description
+        <textarea rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+      </label>
+      <label>
+        Priority
+        <select value={priority} onChange={(event) => setPriority(event.target.value as Priority)}>
+          {priorities.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Assign to
+        <select value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
+          {people.map((person) => (
+            <option key={person.id} value={person.id}>
+              {person.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button type="submit" className="btn">
+        Save changes
+      </button>
+    </form>
+  )
+}
+
 function TaskDetail({
   state,
   taskId,
@@ -294,6 +355,10 @@ function TaskDetail({
           <dd>{owner ? <a href={`#/people/${owner.id}`}>{owner.name}</a> : 'Unassigned'}</dd>
         </div>
         <div>
+          <dt>Opened by</dt>
+          <dd>{openedBy(state, task)}</dd>
+        </div>
+        <div>
           <dt>Updated</dt>
           <dd>{formatWhen(task.updatedAt, now)}</dd>
         </div>
@@ -327,8 +392,8 @@ function TaskDetail({
       )}
       {task.playbook.length > 0 && (
         <>
-          <h3>Demo playbook</h3>
-          <p className="fine">The local engine follows these steps. A real backend would replace the script.</p>
+          <h3>Steps</h3>
+          <p className="fine">The company follows these steps while the task is open.</p>
           <ol className="playbook">
             {task.playbook.map((item, index) => (
               <li key={index} data-state={index < task.stepIndex ? 'done' : index === task.stepIndex ? 'now' : 'later'}>
@@ -360,7 +425,7 @@ function TaskDetail({
         )}
         {canAdvanceTask(task) && (
           <button type="button" className="btn" onClick={() => dispatch({ type: 'ADVANCE_TASK', taskId: task.id })}>
-            Advance demo step
+            Advance step
           </button>
         )}
         {task.consequential && task.status !== 'done' && task.status !== 'waiting_for_owner' && task.status !== 'in_review' && (
@@ -399,6 +464,7 @@ function TaskDetail({
           </div>
         </form>
       )}
+      {task.status !== 'done' && <TaskEdit key={task.id} state={state} task={task} dispatch={dispatch} />}
       <div className="form-grid compact">
         <label>
           Priority

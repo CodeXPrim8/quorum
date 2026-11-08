@@ -4,6 +4,7 @@ export type DepartmentTemplate = Omit<Department, 'id' | 'enabled'>
 export type RoleTemplate = Omit<Role, 'id' | 'departmentId' | 'reportsToRoleId' | 'enabled'> & {
   departmentKey: string
   reportsToKey: string | null
+  kpi: string
 }
 
 export const departmentTemplates: DepartmentTemplate[] = [
@@ -38,7 +39,7 @@ export const departmentTemplates: DepartmentTemplate[] = [
   {
     key: 'procurement',
     name: 'Procurement',
-    summary: 'Checks sample stock, compares supplier quotes, and prepares purchase requests.',
+    summary: 'Checks stock notes, compares supplier quotes, and prepares purchase requests.',
     roomId: 'procurement',
     color: '#3d6b4f',
   },
@@ -84,6 +85,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Chase blockers that cross departments',
       'Bring consequential decisions to the owner',
     ],
+    kpi: 'Every approved goal has an owner and a next task within the week.',
     defaultPermissions: ['catalog.read', 'crm.read', 'finance.read', 'hr.read', 'calendar.read', 'supplier.read'],
   },
   {
@@ -97,6 +99,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Match products to the request',
       'Ask Procurement and Finance for facts before a quote goes out',
     ],
+    kpi: 'A qualified lead has a quote draft within two business days.',
     defaultPermissions: ['catalog.read', 'crm.read', 'email.draft', 'email.send_external', 'calendar.read'],
   },
   {
@@ -104,13 +107,15 @@ export const roleTemplates: RoleTemplate[] = [
     title: 'Marketing Manager',
     departmentKey: 'marketing',
     reportsToKey: 'md',
-    purpose: 'Builds a content calendar for each product or service, names the platform for every post, and reviews copy before anything can be published.',
+    purpose:
+      'Builds a detailed monthly content calendar for each product or service (weekdays, formats, pixel sizes, captions), files it as a PDF, and reviews promotional graphics before anything can be published.',
     responsibilities: [
-      'Write a content calendar for each product, with the day, the point, and the platform',
-      'Put product stills on Instagram, short demos on TikTok, and explainers on YouTube',
-      'Keep every claim inside an approved product fact',
-      'Review social and PR drafts',
+      'Plan a full month of posts with Monday–Friday slots',
+      'Name Instagram Feed, Carousel, Reels, TikTok, and YouTube sizes for every post',
+      'Write caption drafts and objectives; keep every claim inside an approved product fact',
+      'File the calendar PDF in the company chat and review promotional graphics',
     ],
+    kpi: 'Each product has a weekday content calendar filed before the month starts.',
     defaultPermissions: ['catalog.read', 'campaign.draft', 'calendar.read'],
   },
   {
@@ -124,6 +129,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Hold the post in Quorum when no social account is connected',
       'Flag claims that need a source',
     ],
+    kpi: 'Every scheduled post has a caption held for approval before its calendar day.',
     defaultPermissions: ['campaign.draft', 'social.draft', 'social.publish'],
   },
   {
@@ -137,6 +143,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Prepare a short Q&A for the owner',
       'Submit release requests for approval',
     ],
+    kpi: 'An announcement is drafted and submitted for approval before its release date.',
     defaultPermissions: ['catalog.read', 'pr.draft', 'pr.publish'],
   },
   {
@@ -150,6 +157,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Compare supplier quotes',
       'Submit purchase requests for approval',
     ],
+    kpi: 'Sales gets a stock or supplier answer within one business day, and no purchase moves without approval.',
     defaultPermissions: ['catalog.read', 'supplier.read', 'purchase.create'],
   },
   {
@@ -163,6 +171,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Keep responsibilities aligned with the org chart',
       'Submit hiring decisions for approval',
     ],
+    kpi: 'Every open role request states why the hire is needed and waits for the owner.',
     defaultPermissions: ['hr.read', 'hr.hire', 'calendar.read'],
   },
   {
@@ -176,6 +185,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Prepare margin notes for the owner',
       'Flag any change that would touch financial records',
     ],
+    kpi: 'A quote is not called safe until it has a margin note.',
     defaultPermissions: ['finance.read', 'finance.write', 'supplier.read'],
   },
   {
@@ -189,6 +199,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Call out technical blockers before a launch date is promised',
       'Request desktop access only for a named, visible session',
     ],
+    kpi: 'The launch checklist is current, and blockers are named before a date is promised.',
     defaultPermissions: ['tech.internal', 'catalog.read', 'calendar.read'],
   },
   {
@@ -198,6 +209,7 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'sales_manager',
     purpose: 'Works named accounts and brings quotes back to the Sales Manager.',
     responsibilities: ['Keep the lead record current', 'Collect the buyer’s requirements', 'Hand pricing questions to the quote specialist'],
+    kpi: 'Each named account has current requirements on its lead record.',
     defaultPermissions: ['catalog.read', 'crm.read'],
   },
   {
@@ -207,6 +219,7 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'sales_manager',
     purpose: 'Builds quote drafts from catalog prices and procurement notes.',
     responsibilities: ['Draft quotes for the Sales Manager to review', 'Check bundle contents against the catalog', 'Never send a quote without approval'],
+    kpi: 'Quote drafts match the catalog and wait for the Sales Manager.',
     defaultPermissions: ['catalog.read', 'email.draft'],
   },
   {
@@ -214,13 +227,15 @@ export const roleTemplates: RoleTemplate[] = [
     title: 'Graphic Designer',
     departmentKey: 'marketing',
     reportsToKey: 'marketing_manager',
-    purpose: 'Reads the content calendar and designs the post scheduled for that day, in the shape that platform needs. Does not publish.',
+    purpose:
+      'Designs promotional graphics for products and services (calendar / social after approval), and in-house flyers for meetings and internal notices (DM for approval, then company group). Never posts to social.',
     responsibilities: [
-      'Read the content calendar for today’s posts',
-      'Design the Instagram flyer, the TikTok cover, or the YouTube thumbnail named there',
-      'Send the finished graphic to the company chat',
-      'Revise it when the owner asks for changes',
+      'Read the content calendar for today’s promotional posts',
+      'Design Instagram, TikTok, or YouTube creatives for products and services',
+      'Design in-house flyers for meetings and internal information, send them by DM for approval, then to the company group — never to social',
+      'Revise a graphic when the owner or marketing manager asks for changes',
     ],
+    kpi: 'Today’s calendar graphic is in review before the day ends.',
     defaultPermissions: ['catalog.read', 'campaign.draft'],
   },
   {
@@ -230,6 +245,7 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'marketing_manager',
     purpose: 'Turns a campaign brief into drafts the Marketing Manager can review.',
     responsibilities: ['Assemble the campaign kit', 'Track which claims are still unverified', 'Hand finished drafts to Communications'],
+    kpi: 'Each campaign draft lists which claims are still unverified.',
     defaultPermissions: ['catalog.read', 'campaign.draft'],
   },
   {
@@ -238,7 +254,8 @@ export const roleTemplates: RoleTemplate[] = [
     departmentKey: 'procurement',
     reportsToKey: 'procurement_manager',
     purpose: 'Compares supplier quotes and prepares the purchase request.',
-    responsibilities: ['Line up sample quotes', 'Note lead times and payment terms', 'Stop before any order is placed'],
+    responsibilities: ['Line up supplier quotes', 'Note lead times and payment terms', 'Stop before any order is placed'],
+    kpi: 'A purchase request lists lead time, payment terms, and at least two supplier quotes.',
     defaultPermissions: ['catalog.read', 'supplier.read', 'purchase.create'],
   },
   {
@@ -248,6 +265,7 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'technology_lead',
     purpose: 'Ticks through the launch checklist the Head of Technology owns.',
     responsibilities: ['Update the checklist', 'Flag a failed check immediately', 'Stay inside internal systems'],
+    kpi: 'A failed launch check is flagged the same day.',
     defaultPermissions: ['tech.internal'],
   },
   {
@@ -257,6 +275,7 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'technology_lead',
     purpose: 'Looks after internal imports and environment notes.',
     responsibilities: ['Prepare internal import steps', 'Record missing files as blockers', 'Avoid production changes without a task'],
+    kpi: 'Missing import files are recorded as blockers before a run is called ready.',
     defaultPermissions: ['tech.internal'],
   },
   {
@@ -270,6 +289,7 @@ export const roleTemplates: RoleTemplate[] = [
       'Note anything unusual on the internal servers',
       'Keep findings inside Quorum',
     ],
+    kpi: 'A finding on this company’s own systems is written up the day it is seen.',
     defaultPermissions: ['tech.internal', 'calendar.read'],
   },
   {
@@ -279,18 +299,34 @@ export const roleTemplates: RoleTemplate[] = [
     reportsToKey: 'cyber',
     purpose: 'The internal hacker for this company’s own systems. Tests them here and writes up what should be fixed. Does not touch anything outside Quorum.',
     responsibilities: [
-      'Probe the company’s own demo systems',
+      'Probe the company’s own systems',
       'Write the finding in plain language',
       'Hand the note to the Cybersecurity Lead',
     ],
+    kpi: 'Each test of this company’s own systems ends as a plain-language finding.',
     defaultPermissions: ['tech.internal'],
   },
 ]
 
 export const businessTypePresets = [
   'IT hardware, devices, and software',
+  'Software and SaaS',
   'Professional services',
+  'Consulting',
   'Retail',
+  'Food and beverage',
+  'Hospitality',
+  'Construction and real estate',
+  'Manufacturing',
+  'Logistics and transport',
+  'Healthcare',
+  'Education',
+  'Finance and insurance',
+  'Media and creative',
+  'Agriculture',
+  'Energy',
+  'Legal',
+  'Nonprofit',
   'Other',
 ]
 

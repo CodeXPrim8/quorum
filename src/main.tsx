@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { loadServerModel } from './agents/model'
 import { ErrorState } from './components/Shell'
 import { StoreProvider } from './store/Store'
 import './styles/global.css'
@@ -32,10 +33,12 @@ class Boundary extends Component<{ children: ReactNode }, { message: string | nu
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing root element')
 
-createRoot(root).render(
-  <Boundary>
-    <StoreProvider>
-      <App />
-    </StoreProvider>
-  </Boundary>,
-)
+void loadServerModel().finally(() => {
+  createRoot(root).render(
+    <Boundary>
+      <StoreProvider>
+        <App />
+      </StoreProvider>
+    </Boundary>,
+  )
+})

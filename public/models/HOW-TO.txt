@@ -1,0 +1,14 @@
+Drop glTF files here, then uncomment the matching line in src/office/model-catalog.ts
+
+File name example:
+  public/models/staff/staff_morgan.glb
+
+Blender export:
+  File → Export → glTF 2.0 (.glb)
+  Format: glTF Binary (.glb)
+  Transform: +Y Up
+  Origin at the feet, character facing -Z or +Y in Blender as you prefer
+  Apply scale (Ctrl+A) so the person is about 1.6–1.8 m tall
+  Include meshes + materials. No office lights (the Quorum office already has lighting).
+
+Do not export the office building. Only people (and later, props if you add catalog entries).

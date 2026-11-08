@@ -83,8 +83,11 @@ const WOMEN = new Set([
   'mei',
 ])
 
-/** One voice each for the Northline roster so they do not collapse into the same sound. */
+/** One voice each so people do not collapse into the same sound. */
+export const QUORUM_SPEAKER: Pick<Staff, 'id' | 'name'> = { id: 'quorum', name: 'Quorum' }
+
 const ROSTER: Record<string, StaffVoice> = {
+  quorum: { kind: 'man', live: 'ash', tts: 'onyx', rate: 0.97, pitch: 0.9 },
   staff_morgan: { kind: 'woman', live: 'coral', tts: 'nova', rate: 0.98, pitch: 1.06 },
   staff_priya: { kind: 'woman', live: 'sage', tts: 'shimmer', rate: 1.0, pitch: 1.04 },
   staff_jonah: { kind: 'man', live: 'ash', tts: 'onyx', rate: 0.96, pitch: 0.84 },

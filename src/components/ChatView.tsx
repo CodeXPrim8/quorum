@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { subscribeNotice, subscribeTyping, type Typing } from '../agents/status'
 import { readModelLink, saveModelLink } from '../agents/model'
-import { liveStatus } from '../agents/live'
 import { isStaffActive } from '../domain/active'
-import { ensureChat } from '../chat/threads'
+import { ensureChat, withoutSpeaker } from '../chat/threads'
 import { Face, initials } from './Face'
 import { formatWhen, uid } from '../lib/format'
-import { reportCadence } from '../domain/reports'
-import type { AppState, ChatThread, Command, Design, ReportCadence, Staff } from '../types'
+import { badgeCount, unreadIn } from '../domain/attention'
+import type { AppState, ChatThread, Command, Design, Staff } from '../types'
 
 export function ChatView({
   state,
@@ -26,14 +25,13 @@ export function ChatView({
   const people = view.staff.filter((person) => isStaffActive(view, person))
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState('')
-  const [panel, setPanel] = useState<'group' | 'model' | 'voice' | null>(null)
+  const [panel, setPanel] = useState<'group' | 'model' | null>(null)
   const [groupName, setGroupName] = useState('')
   const [groupMembers, setGroupMembers] = useState<string[]>([])
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com/v1')
   const [model, setModel] = useState('deepseek-chat')
   const [apiKey, setApiKey] = useState('')
   const [linked, setLinked] = useState(() => Boolean(readModelLink()))
-  const [voices, setVoices] = useState(false)
   const [typing, setTypingState] = useState<Typing>(null)
   const [notice, setNotice] = useState('')
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -48,9 +46,6 @@ export function ChatView({
 
   useEffect(() => subscribeTyping(setTypingState), [])
   useEffect(() => subscribeNotice(setNotice), [])
-  useEffect(() => {
-    void liveStatus().then(setVoices)
-  }, [])
 
   const threads = useMemo(() => orderThreads(view.threads, view.chat), [view.threads, view.chat])
   const visible = threads.filter((thread) => thread.name.toLowerCase().includes(query.trim().toLowerCase()))
@@ -93,6 +88,11 @@ export function ChatView({
     }
   }, [shown?.id])
 
+  useEffect(() => {
+    if (!shown) return
+    dispatch({ type: 'READ_THREAD', threadId: shown.id })
+  }, [shown?.id])
+
   const openThread = (id: string) => {
     window.location.hash = `#/chat/${id}`
     setPanel(null)
@@ -124,40 +124,13 @@ export function ChatView({
             <button type="button" className="wa-icon" onClick={() => setPanel(panel === 'group' ? null : 'group')}>
               New group
             </button>
-            <button type="button" className="wa-icon" onClick={() => setPanel(panel === 'model' ? null : 'model')}>
-              {linked ? 'Model linked' : 'Link model'}
-            </button>
-            <button type="button" className="wa-icon" onClick={() => setPanel(panel === 'voice' ? null : 'voice')}>
-              {voices ? 'Live voice on' : 'Live voice'}
-            </button>
+            {!linked && (
+              <button type="button" className="wa-icon" onClick={() => setPanel(panel === 'model' ? null : 'model')}>
+                Link model
+              </button>
+            )}
           </div>
         </header>
-        <p className="wa-status">
-          <button type="button" className="wa-status-btn" onClick={() => dispatch({ type: 'SET_AGENTS', working: !view.settings.agentsWorking })}>
-            <i data-on={view.settings.agentsWorking ? 'true' : 'false'} />
-            {view.settings.agentsWorking ? 'Agents are working' : 'Agents are paused'}
-          </button>
-          <button
-            type="button"
-            className="wa-status-btn"
-            onClick={() => dispatch({ type: 'SET_MARKETING_REVIEW', enabled: view.settings.marketingReviews === false })}
-          >
-            <i data-on={view.settings.marketingReviews === false ? 'false' : 'true'} />
-            {view.settings.marketingReviews === false ? 'You review graphics' : 'Marketing manager reviews graphics'}
-          </button>
-          <label className="wa-status-btn">
-            Reports
-            <select
-              value={reportCadence(view)}
-              onChange={(event) => dispatch({ type: 'SET_REPORT_CADENCE', cadence: event.target.value as ReportCadence })}
-            >
-              <option value="daily">Daily to you</option>
-              <option value="weekly">Weekly to you</option>
-              <option value="monthly">Monthly to you</option>
-            </select>
-          </label>
-          <span>{linked ? 'A model is linked on this computer.' : 'They answer from their roles until you link a model. Staff file to their manager every office day; you get the compiled report on this cadence.'}</span>
-        </p>
         {panel === 'group' && (
           <form
             className="wa-panel"
@@ -200,7 +173,7 @@ export function ChatView({
             </button>
           </form>
         )}
-        {panel === 'model' && (
+        {panel === 'model' && !linked && (
           <form
             className="wa-panel"
             onSubmit={(event) => {
@@ -213,8 +186,8 @@ export function ChatView({
           >
             <h2>Link a model</h2>
             <p>
-              This is the brain. DeepSeek (or another chat model) reasons, routes, and coordinates staff. The key stays
-              in this browser. OpenAI is not used here.
+              This is the brain. Paste DeepSeek, or Grok at https://api.x.ai/v1 with a Grok model name and an xAI key.
+              The key stays in this browser. Quorum then uses that model to decide and to write.
             </p>
             <label>
               Address
@@ -229,40 +202,11 @@ export function ChatView({
               <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="off" required />
             </label>
             <div className="button-row">
-              <button type="submit" className="btn btn-primary">
-                Save on this computer
-              </button>
-              {linked && (
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    saveModelLink(null)
-                    setLinked(false)
-                    setApiKey('')
-                  }}
-                >
-                  Remove key
-                </button>
-              )}
-            </div>
-          </form>
-        )}
-        {panel === 'voice' && (
-          <div className="wa-panel">
-            <h2>Live voice</h2>
-            <p>
-              Calls use OpenAI GPT Live over WebRTC for hearing you and speaking back. DeepSeek still writes every
-              reply and picks which agent talks. The OpenAI key lives in the server environment as OPENAI_API_KEY —
-              never in this browser.
-            </p>
-            <p>{voices ? 'This server has a live voice key.' : 'This server has no OPENAI_API_KEY. Add it to .env and restart npm run dev. Until then, the call uses this computer’s microphone and voices.'}</p>
-            <div className="button-row">
-              <button type="button" className="btn" onClick={() => setPanel(null)}>
-                Close
-              </button>
-            </div>
+            <button type="submit" className="btn btn-primary">
+              Save on this computer
+            </button>
           </div>
+          </form>
         )}
         <label className="wa-search">
           <span className="sr">Search chats</span>
@@ -369,7 +313,7 @@ export function ChatView({
                 <p className="wa-empty">
                   {shown.kind === 'direct'
                     ? `This chat prompts ${shown.name}. Say hello, or ask them to do something in their role.`
-                    : 'Tag someone with @, or @all for everyone in this chat. A graphic still waits here for your approval before social.'}
+                    : 'Tag someone with @, or @all for everyone in this chat. Promotional graphics wait here before social. In-house flyers are approved in a DM, then shared in this group.'}
                 </p>
               )}
               {messages.map((message) => {
@@ -378,15 +322,18 @@ export function ChatView({
                 return (
                   <article key={message.id} className={mine ? 'wa-bubble mine' : 'wa-bubble'}>
                     {!mine && shown.kind !== 'direct' && <b style={{ color: shirtOf(people, message.authorId) }}>{message.authorName}</b>}
-                    <p>{message.text}</p>
+                    <p>{withoutSpeaker(message.authorName, message.text)}</p>
                     {message.file && (
                       <a className="wa-file" href={message.file.dataUrl} download={message.file.name}>
                         {message.file.name}
                       </a>
                     )}
                     {design && <DesignCard design={design} />}
-                    {design?.status === 'in_review' && design.reviewer === 'marketing' && message.authorId !== 'owner' && (
-                      <p className="wa-review-note">The marketing manager is looking at this. You can still approve it or ask for a change.</p>
+                    {design?.status === 'in_review' && design.audience === 'internal' && message.authorId !== 'owner' && (
+                      <p className="wa-review-note">In-house only. Approve here to share it in the company group. It will not go to social.</p>
+                    )}
+                    {design?.status === 'in_review' && design.audience !== 'internal' && design.reviewer === 'marketing' && message.authorId !== 'owner' && (
+                      <p className="wa-review-note">The marketing manager is looking at this promotional graphic. You can still approve it or ask for a change.</p>
                     )}
                     {design?.status === 'in_review' && message.authorId !== 'owner' && (
                       <div className="wa-review">
@@ -397,7 +344,7 @@ export function ChatView({
                           aria-label="Note for a revision"
                         />
                         <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: 'REVIEW_DESIGN', designId: design.id, decision: 'approved' })}>
-                          Approve
+                          {design.audience === 'internal' ? 'Approve to company group' : 'Approve'}
                         </button>
                         <button
                           type="button"
@@ -535,12 +482,16 @@ function ThreadList({
       <p className="wa-section">{title}</p>
       {threads.map((thread) => {
         const last = [...view.chat].reverse().find((message) => message.threadId === thread.id)
+        const unread = unreadIn(view, thread.id)
         return (
           <button key={thread.id} type="button" className="wa-row" aria-current={thread.id === activeId ? 'true' : undefined} onClick={() => onOpen(thread.id)}>
-            <Avatar thread={thread} people={people} />
+            <span className="wa-avatar-wrap">
+              <Avatar thread={thread} people={people} />
+              {unread > 0 && <span className="note-badge">{badgeCount(unread)}</span>}
+            </span>
             <span>
               <strong>{thread.name}</strong>
-              <small>{last ? `${last.authorId === 'owner' ? 'You' : last.authorName.split(' ')[0]}: ${last.designId ? 'Graphic' : last.text}` : 'No messages yet'}</small>
+              <small>{last ? `${last.authorId === 'owner' ? 'You' : last.authorName.split(' ')[0]}: ${last.designId ? 'Graphic' : withoutSpeaker(last.authorName, last.text)}` : 'No messages yet'}</small>
             </span>
             {last && <time dateTime={last.at}>{formatWhen(last.at, now)}</time>}
           </button>
@@ -563,23 +514,36 @@ function Avatar({ thread, people }: { thread: ChatThread; people: Staff[] }) {
 }
 
 function DesignCard({ design }: { design: Design }) {
+  const internal = design.audience === 'internal'
   const label =
-    design.status === 'held'
-      ? 'Approved · held in Quorum'
+    design.status === 'published'
+      ? 'Published on Instagram'
+      : design.status === 'held'
+      ? 'Approved · held for social'
       : design.status === 'declined'
         ? 'Declined'
         : design.status === 'changes'
           ? 'Superseded'
           : design.status === 'approved'
-            ? 'Approved'
+            ? internal
+              ? 'Approved · company group'
+              : 'Approved'
             : design.reviewer === 'marketing'
               ? 'With the marketing manager'
-              : 'In review'
+              : internal
+                ? 'In review · DM'
+                : 'In review'
+  const shape = design.format === 'cover' ? 'portrait' : design.format === 'thumbnail' ? 'landscape' : 'square'
+  const finishing = design.artStatus === 'pending' && !design.art
+  const channel = design.platform === 'tiktok' ? 'TikTok' : design.platform === 'youtube' ? 'YouTube' : design.platform === 'instagram' ? 'Instagram' : ''
   return (
     <figure className="design-card">
-      <div className="poster" dangerouslySetInnerHTML={{ __html: design.svg }} />
+      <div className={finishing ? 'poster is-pending' : 'poster'} data-shape={shape} dangerouslySetInnerHTML={{ __html: design.svg }} />
       <figcaption>
-        <span>{design.platform ? `${label} · ${design.platform === 'tiktok' ? 'TikTok' : design.platform === 'youtube' ? 'YouTube' : 'Instagram'}` : label}</span>
+        <span>
+          {internal ? `${label} · in-house · never social` : channel ? `${label} · ${channel}` : `${label} · promotional`}
+          {finishing ? ' · finishing the photograph' : design.artStatus === 'ready' ? ' · studio + photo' : ' · studio'}
+        </span>
         <span>Revision {design.revision}</span>
       </figcaption>
     </figure>

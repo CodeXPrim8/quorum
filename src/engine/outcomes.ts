@@ -1,4 +1,4 @@
-import type { ConsequentialAction } from '../types'
+import type { ConsequentialAction, DesktopMode } from '../types'
 
 export const WALK_MS = 3800
 
@@ -20,23 +20,32 @@ export function actionLabel(action: ConsequentialAction): string {
 }
 
 /**
- * Approval never claims an external side effect. Connection status is checked
- * by the caller; this copy is the only outcome this build can honestly record.
+ * Approval outcomes match what Quorum actually does: file into in-app holds/ledgers,
+ * or open a desktop grant when a session is active. No live outside network is claimed.
  */
-export function approvalOutcome(action: ConsequentialAction): string {
+export function approvalOutcome(
+  action: ConsequentialAction,
+  desktop?: { sessionActive: boolean; mode: DesktopMode | null },
+): string {
   switch (action) {
     case 'publish_public':
-      return 'You approved the request. Nothing was published. Social and PR channels are not connected.'
+      return 'You approved the request. The exact copy is held in Quorum for publishing. It was not posted to a live social or newswire network.'
     case 'send_external':
-      return 'You approved the request. No email was sent. Email is not connected.'
+      return 'You approved the request. The message is held in Quorum’s email outbox. It was not sent through an outside mailbox.'
     case 'purchase':
-      return 'You approved the request. No purchase order was placed. Supplier systems are not connected.'
+      return 'You approved the request. The purchase note is filed in Quorum. No supplier portal received an order.'
     case 'finance_change':
-      return 'You approved the request. No financial records were changed. Finance systems are not connected.'
+      return 'You approved the request. The finance entry is filed in Quorum’s ledger. No bank or accounting SaaS was changed.'
     case 'hiring':
-      return 'You approved the request. No offer was sent, and no HR system was updated.'
+      return 'You approved the request. The hiring pack is filed in Quorum. No offer email left this computer.'
     case 'desktop_control':
-      return 'You approved the request. No desktop session started. This build has no desktop agent, so the computer was not viewed or controlled.'
+      if (!desktop?.sessionActive || !desktop.mode) {
+        return 'You approved the request. No desktop session is active, so the computer was not viewed or controlled. Start a session on Integrations first.'
+      }
+      if (desktop.mode === 'approved') {
+        return 'You approved the request. A bounded desktop run is allowed for this task in Approved mode. End the session anytime on Integrations.'
+      }
+      return 'You approved the request. Live desktop control is allowed for this task until it finishes or you end the session.'
   }
 }
 

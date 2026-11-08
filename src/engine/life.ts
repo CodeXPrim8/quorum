@@ -1,5 +1,5 @@
 import { isStaffActive } from '../domain/active'
-import { iso, money, uid } from '../lib/format'
+import { money } from '../lib/format'
 import { arrivalTime, walkingPresence } from '../office/presence'
 import { barSeats, cafeSeats, chatPair, commuteStart, entrance, loungeSeats, roomAt, rooms, screenSpot, serverSpot, toiletSpot, waterApproach, type Spot } from '../office/world'
 import type { AppState, OfficeClock, Ride, Staff, StaffLife } from '../types'
@@ -46,7 +46,45 @@ export function clockOpen(clock: OfficeClock): boolean {
   return clock.minute >= clock.openMinute && clock.minute < clock.closeMinute
 }
 
+/** Minutes from local midnight, including a fraction of the current minute. */
+function wallMinute(now: number): number {
+  const date = new Date(now)
+  return date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60
+}
+
+function localDayNumber(now: number): number {
+  const date = new Date(now)
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000)
+}
+
+/** A short move of the office clock, including the step across midnight. */
+function smallStep(before: number, after: number): boolean {
+  const delta = after - before
+  if (delta >= -0.05 && delta <= 20) return true
+  return before >= 24 * 60 - 20 && after <= 20
+}
+
+function crossedMinute(before: number, after: number, at: number): boolean {
+  if (after >= before) return before < at && after >= at
+  return before < at || after >= at
+}
+
 function advanceClock(state: AppState, now: number): AppState {
+  if (state.settings.realTime) {
+    const minute = wallMinute(now)
+    let day = state.clock.day
+    if (state.clock.updatedAt > 0) {
+      const gained = localDayNumber(now) - localDayNumber(state.clock.updatedAt)
+      if (gained > 0) day += gained
+    }
+    const jumped = state.clock.updatedAt > 0 && !smallStep(state.clock.minute, minute)
+    const clock = { ...state.clock, minute, day, updatedAt: now }
+    if (jumped && minute >= clock.closeMinute) {
+      if (clock.filedDay !== day) clock.filedDay = day
+      if (clock.ownerReportDay < day) clock.ownerReportDay = day
+    }
+    return { ...state, clock }
+  }
   if (state.clock.updatedAt === 0) return { ...state, clock: { ...state.clock, updatedAt: now } }
   const elapsed = Math.min(8, Math.max(0, (now - state.clock.updatedAt) / 1000))
   let minute = state.clock.minute + elapsed * state.clock.speed
@@ -68,23 +106,9 @@ function committed(state: AppState, person: Staff, now: number): boolean {
   )
 }
 
-function note(state: AppState, person: Staff, message: string, now: number): AppState {
-  return {
-    ...state,
-    events: [
-      {
-        id: uid('evt'),
-        at: iso(now),
-        actorId: person.id,
-        actorName: person.name,
-        kind: 'life' as const,
-        staffId: person.id,
-        message,
-        audit: false,
-      },
-      ...state.events,
-    ].slice(0, 300),
-  }
+/** Office movement stays on the floor. It is not company work and is not written into activity or reports. */
+function note(state: AppState, _person: Staff, _message: string, _now: number): AppState {
+  return state
 }
 
 function patchPerson(state: AppState, person: Staff): AppState {

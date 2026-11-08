@@ -4,6 +4,7 @@ import { getSupabase, sessionFrom, supabaseConfigured, type CloudSession } from 
 import { applyCommand } from '../engine/apply'
 import { defaultLife, freshClock } from '../engine/life'
 import { ensureChat } from '../chat/threads'
+import { isOfficeLife } from '../domain/reports'
 import { blankState, withDesigner, withSecurityTeam } from '../domain/sample'
 import { settledPresence } from '../office/presence'
 import { nextDesk } from '../office/world'
@@ -23,6 +24,15 @@ type StoreValue = {
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
+
+/** Sessions never survive reload; agent reachability is probed again by the UI. */
+export function clearedDesktop(_desktop?: AppState['desktop']): AppState['desktop'] {
+  return {
+    agentConnected: false,
+    sessionActive: false,
+    mode: null,
+  }
+}
 
 function hydrate(parsed: AppState, now: number): AppState {
   const legacyFloor = !parsed.clock
@@ -44,14 +54,26 @@ function hydrate(parsed: AppState, now: number): AppState {
       life: { ...defaultLife(index), ...(person.life ?? {}) },
     }
   })
+  const events = (parsed.events ?? []).filter((event) => event.kind !== 'life' && !isOfficeLife(event.message))
+  const reports = (parsed.reports ?? []).filter((item) => item.text.trim() && !isOfficeLife(item.text))
+  const chat = (parsed.chat ?? []).filter((message) => !isOfficeLife(message.text))
   return ensureChat(
     withDesigner(
     withSecurityTeam({
       ...parsed,
+      events,
+      reports,
+      chat,
+      desktop: clearedDesktop(parsed.desktop),
+      quorumAsk:
+        parsed.quorumAsk?.status === 'granted'
+          ? { ...parsed.quorumAsk, status: 'pending' }
+          : parsed.quorumAsk,
       staff,
-      chat: parsed.chat ?? [],
       designs: parsed.designs ?? [],
-      reports: parsed.reports ?? [],
+      records: parsed.records ?? [],
+      whatsapp: parsed.whatsapp ?? [],
+      goalProposals: parsed.goalProposals ?? [],
       clock: parsed.clock
         ? {
             ...parsed.clock,
@@ -77,9 +99,8 @@ function readLocal(reducedMotion: boolean): { state: AppState | null; error: str
     if (!parsed || parsed.version !== 1 || !parsed.settings || !parsed.desktop) {
       return { state: null, error: 'Saved company data is from a different version of Quorum.' }
     }
-    const desktop = parsed.desktop as { agentConnected?: boolean; sessionActive?: boolean }
-    if (desktop.agentConnected || desktop.sessionActive) {
-      return { state: null, error: 'Saved data claimed a desktop session. Quorum rejected it.' }
+    if (parsed.company?.id === 'co_northline' || parsed.company?.name === 'Northline Supply Co.') {
+      return { state: blankState(reducedMotion), error: null }
     }
     const now = Date.now()
     return { state: applyCommand(hydrate(parsed, now), { type: 'TICK' }, now), error: null }
@@ -89,6 +110,9 @@ function readLocal(reducedMotion: boolean): { state: AppState | null; error: str
 }
 
 function openState(source: AppState | null, reducedMotion: boolean): { state: AppState | null; error: string | null } {
+  if (source?.company?.id === 'co_northline' || source?.company?.name === 'Northline Supply Co.') {
+    return { state: blankState(reducedMotion), error: null }
+  }
   if (!source) return readLocal(reducedMotion)
   try {
     const now = Date.now()

@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { rooms } from '../office/layout'
 import { reportCadence } from '../domain/reports'
+import { invalidSocial, normalizeSocial, type CompanySocial } from '../domain/social'
+import { normalizeWebsite } from '../domain/website'
+import { SocialFields } from './SocialFields'
 import type { AppState, Command, OwnerGender, ReportCadence } from '../types'
 
 export function Settings({ state, dispatch }: { state: AppState; dispatch: (command: Command) => void }) {
@@ -10,6 +13,13 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
   const [ownerName, setOwnerName] = useState(company?.ownerName ?? '')
   const [ownerTitle, setOwnerTitle] = useState<'Chairman' | 'CEO'>(company?.ownerTitle ?? 'Chairman')
   const [ownerGender, setOwnerGender] = useState<OwnerGender | ''>(company?.ownerGender ?? '')
+  const [website, setWebsite] = useState(company?.website ?? '')
+  const [social, setSocial] = useState<CompanySocial>({
+    youtube: company?.social?.youtube ?? '',
+    tiktok: company?.social?.tiktok ?? '',
+    instagram: company?.social?.instagram ?? '',
+    linkedin: company?.social?.linkedin ?? '',
+  })
   const [goal, setGoal] = useState('')
   const [departmentName, setDepartmentName] = useState('')
   const [departmentSummary, setDepartmentSummary] = useState('')
@@ -18,7 +28,7 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
   const [rolePurpose, setRolePurpose] = useState('')
   const [roleDepartment, setRoleDepartment] = useState(state.departments[0]?.id ?? '')
   const [reportsTo, setReportsTo] = useState('')
-  const [confirm, setConfirm] = useState<'sample' | 'reset' | null>(null)
+  const [confirm, setConfirm] = useState<'reset' | null>(null)
   if (!company) return null
 
   return (
@@ -27,7 +37,7 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
         <div>
           <p className="eyebrow">Configuration</p>
           <h1>Company</h1>
-          <p className="lede">Departments, roles, and who the managers report to. The sample cast is only one setup.</p>
+          <p className="lede">Departments, roles, and who the managers report to.</p>
         </div>
       </header>
       <form
@@ -35,7 +45,20 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
         onSubmit={(event) => {
           event.preventDefault()
           if (!ownerGender) return
-          dispatch({ type: 'UPDATE_COMPANY', patch: { name, businessType, ownerName, ownerTitle, ownerGender } })
+          if (website.trim() && !normalizeWebsite(website)) return
+          if (invalidSocial(social)) return
+          dispatch({
+            type: 'UPDATE_COMPANY',
+            patch: {
+              name,
+              businessType,
+              ownerName,
+              ownerTitle,
+              ownerGender,
+              website: normalizeWebsite(website) ?? '',
+              social: normalizeSocial(social) ?? {},
+            },
+          })
         }}
       >
         <h2>Profile</h2>
@@ -59,23 +82,50 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
           </select>
         </label>
         <fieldset>
-          <legend>You are</legend>
+          <legend>Gender</legend>
           <label className="check">
             <input type="radio" name="ownerGender" checked={ownerGender === 'male'} onChange={() => setOwnerGender('male')} />
-            A man — staff address you as sir
+            Male
           </label>
           <label className="check">
             <input type="radio" name="ownerGender" checked={ownerGender === 'female'} onChange={() => setOwnerGender('female')} />
-            A woman — staff address you as ma
+            Female
           </label>
         </fieldset>
-        <button type="submit" className="btn btn-primary" disabled={!ownerGender}>
+        <label>
+          Company website
+          <input
+            value={website}
+            onChange={(event) => setWebsite(event.target.value)}
+            placeholder="example.com"
+            inputMode="url"
+            autoComplete="url"
+          />
+        </label>
+        <p className="fine">Optional. Goal and tax work read this site when it is filled in.</p>
+        <SocialFields
+          values={social}
+          onChange={(network, value) => setSocial((current) => ({ ...current, [network]: value }))}
+        />
+        <button type="submit" className="btn btn-primary" disabled={!ownerGender || (website.trim() !== '' && !normalizeWebsite(website)) || Boolean(invalidSocial(social))}>
           Save profile
         </button>
       </form>
       <section className="panel">
+        <h2>Office time</h2>
+        <p>Staff match your morning, afternoon, and night. Turn it off to use the office clock.</p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={state.settings.realTime === true}
+            onChange={(event) => dispatch({ type: 'SET_REAL_TIME', value: event.target.checked })}
+          />
+          Use my local time
+        </label>
+      </section>
+      <section className="panel">
         <h2>Line reports</h2>
-        <p className="lede">Staff file to their manager at close every office day. You choose how often those managers send the compiled report to you. The notes stay in this browser.</p>
+        <p className="lede">Staff report to their manager each day. You choose how often you get the compiled report.</p>
         <label>
           Send compiled reports to me
           <select
@@ -270,45 +320,27 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
         </form>
       </section>
       <section className="panel">
-        <h2>Demo engine</h2>
+        <h2>Staff AI</h2>
         <p>
-          The engine advances sample playbooks already in progress. It does not call a model and it does not leave this
-          browser. Walks that have started still finish when the engine is paused.
+          When agents are working, staff use the model linked under Chat to draft real desk work in Quorum. Outside
+          holds (email, social, PR) file inside Quorum and do not hit live networks. Desktop needs an owner-started session. Walks that have started still finish
+          if you pause agents.
         </p>
         <button
           type="button"
           className="btn"
-          onClick={() => dispatch({ type: 'SET_ENGINE', running: !state.settings.engineRunning })}
+          onClick={() => dispatch({ type: 'SET_AGENTS', working: !state.settings.agentsWorking })}
         >
-          {state.settings.engineRunning ? 'Pause demo engine' : 'Run demo engine'}
+          {state.settings.agentsWorking ? 'Pause staff AI' : 'Run staff AI'}
         </button>
       </section>
       <section className="panel">
-        <h2>Replace or reset</h2>
+        <h2>Reset</h2>
         <div className="button-row">
-          <button type="button" className="btn" onClick={() => setConfirm('sample')}>
-            Replace with the Northline sample
-          </button>
           <button type="button" className="btn btn-danger" onClick={() => setConfirm('reset')}>
             Clear this company
           </button>
         </div>
-        {confirm === 'sample' && (
-          <div className="note">
-            <p>This replaces the current company, tasks, and audit log in this browser.</p>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => {
-                dispatch({ type: 'LOAD_SAMPLE' })
-                setConfirm(null)
-                window.location.hash = '#/overview'
-              }}
-            >
-              Yes, load Northline
-            </button>
-          </div>
-        )}
         {confirm === 'reset' && (
           <div className="note">
             <p>This removes the company from this browser and returns to setup.</p>

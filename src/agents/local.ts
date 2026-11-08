@@ -4,6 +4,7 @@ import type { OwnerGender, Staff } from '../types'
 export type AgentTurn = {
   text: string
   designBrief?: string
+  learned?: string
 }
 
 function clean(value: string): string {
@@ -29,6 +30,8 @@ export function localTurn(input: {
   text: string
   intent: 'reply' | 'design' | 'update'
   taskTitle?: string
+  socialNote?: string
+  siteNote?: string
 }): AgentTurn {
   const { person, companyName, ownerName } = input
   const asked = clean(input.text)
@@ -38,6 +41,20 @@ export function localTurn(input: {
       text: `I only work on ${companyName}’s own systems inside Quorum. I can’t help with breaking into anything.`,
     }
   }
+  if (input.siteNote && /\b(website|web ?site|homepage|browse|gone through|go through|https?:\/\/|www\.)\b/i.test(asked)) {
+    if (input.siteNote.startsWith('The company website is not saved')) {
+      return { text: 'The company website is not on the profile yet. Add the public link and I can read it.' }
+    }
+    if (input.siteNote.startsWith('Could not read')) {
+      return { text: 'I opened the link. The page did not come back as text, so I could not go through it.' }
+    }
+    const line =
+      input.siteNote
+        .split('\n')
+        .find((item) => item.startsWith('Page:') || item.startsWith('Description:') || item.startsWith('Title:')) ??
+      input.siteNote
+    return { text: `Yes. I opened it. ${clip(line.replace(/^(Page|Description|Title): /, ''), 320)}` }
+  }
   if (/\b(send|email|publish|post|pay|transfer|wire)\b/i.test(asked) && /\b(client|customer|instagram|twitter|linkedin|facebook|tiktok|bank|supplier|live)\b/i.test(asked)) {
     return {
       text: `I can draft that here. Nothing outside ${companyName} is connected, so I won’t send it, post it, or pay it.`,
@@ -46,17 +63,22 @@ export function localTurn(input: {
   if (input.intent === 'update' && input.taskTitle) {
     return { text: `I’m working on “${input.taskTitle}”. I’ll bring the result back to this chat. It stays inside Quorum.` }
   }
-  if (input.intent === 'design' || (isDesigner(person) && /design|graphic|poster|logo|visual|artwork|banner|draw/i.test(asked))) {
+  if (input.intent === 'design' || (isDesigner(person) && /design|graphic|poster|logo|visual|artwork|banner|draw|flyer/i.test(asked))) {
     const brief = clip(asked || input.taskTitle || companyName, 80)
+    const internal = /\b(meeting|standup|stand-?up|all[- ]hands|agenda|internal|in[- ]house|office|hr|memo|notice|goals?)\b/i.test(brief)
     return {
       designBrief: brief,
-      text: `I’ll design “${brief}” and put it in the company chat for you to review. Nothing is posted until you approve it.`,
+      text: internal
+        ? `I’ll make an in-house flyer for “${brief}” and send it to you in this chat. After you approve it, it goes to the company group only — not to Instagram or any social account.`
+        : `I’ll design the promotional graphic for “${brief}” and put it in the company chat for review. Nothing is posted to social until you approve it, and only if that account is connected.`,
     }
   }
-  if (person.roleId === 'role_social_manager' && /post|publish|caption|social/i.test(asked)) {
+  if (person.roleId === 'role_social_manager' && /post|publish|caption|social|instagram/i.test(asked)) {
     const subject = clip(asked.replace(/^hi [\w]+[,.]?\s*/i, '').replace(/draft a caption for/i, ''), 72) || 'the launch'
     return {
-      text: `Caption: “${subject}. Made for the people who need it.” I’ll hold it in this chat. No social account is connected, so nothing goes live.`,
+      text: input.socialNote
+        ? `Caption: “${subject}. Made for the people who need it.” After you approve the graphic, I’ll publish Instagram posts when the Graph API line is connected.`
+        : `Caption: “${subject}. Made for the people who need it.” After you approve the graphic, I’ll publish it on Instagram when INSTAGRAM_TOKEN is set on this server.`,
     }
   }
   if (/can you hear|hear me|you there|are you there/i.test(asked)) {

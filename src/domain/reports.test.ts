@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createSampleState } from '../engine/apply'
-import { ownerReportDue, reportCadence } from './reports'
+import { createSampleState } from '../engine/fixture'
+import { isOfficeLife, ownerReportDue, reportCadence } from './reports'
 
 const now = 1_700_000_000_000
 
@@ -13,5 +13,8 @@ describe('line reports', () => {
     expect(ownerReportDue('weekly', 5, 10)).toBe(true)
     expect(ownerReportDue('monthly', 5, 24)).toBe(false)
     expect(ownerReportDue('monthly', 5, 26)).toBe(true)
+    expect(isOfficeLife('Went for water.')).toBe(true)
+    expect(isOfficeLife('Eating in the cafeteria.')).toBe(true)
+    expect(isOfficeLife('Filed the solar survey for the client site.')).toBe(false)
   })
 })

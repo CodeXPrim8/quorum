@@ -1,16 +1,22 @@
 import { isStaffActive } from '../domain/active'
-import { formatLabel, offeringsFromGoals, platformLabel } from '../domain/calendar'
-import { COMPANY_THREAD } from '../chat/threads'
+import { canOpenDayToDay, DAY_TO_DAY_MANAGER_KEYS, openWorkCount, roleKeyOf } from '../domain/authority'
+import { formatLabel, platformLabel } from '../domain/calendar'
+import { COMPANY_THREAD, withoutSpeaker } from '../chat/threads'
 import { isDesigner } from './local'
-import type { AppState, Staff } from '../types'
+import type { AppState, Staff, Task } from '../types'
+
+function currentStep(task: Task) {
+  return task.playbook[task.stepIndex] ?? null
+}
 
 export type AgentJob = {
   kind: 'reply' | 'initiative'
   threadId: string
   staffId: string
   prompt: string
-  intent: 'reply' | 'design' | 'update' | 'calendar' | 'review'
+  intent: 'reply' | 'design' | 'update' | 'calendar' | 'review' | 'work' | 'start' | 'spawn' | 'propose_goal'
   taskTitle?: string
+  taskId?: string
   designBrief?: string
   calendarId?: string
   designId?: string
@@ -19,6 +25,7 @@ export type AgentJob = {
 
 const SPEAK_GAP = 12 * 60_000
 const PULSE_GAP = 35_000
+const WORK_GAP = 45_000
 
 function historyFor(state: AppState, threadId: string, staffId: string) {
   return state.chat
@@ -26,7 +33,10 @@ function historyFor(state: AppState, threadId: string, staffId: string) {
     .slice(-10)
     .map((message) => ({
       role: message.authorId === staffId ? ('assistant' as const) : ('user' as const),
-      content: `${message.authorName}: ${message.text}`,
+      content:
+        message.authorId === staffId
+          ? withoutSpeaker(message.authorName, message.text)
+          : `${message.authorName}: ${withoutSpeaker(message.authorName, message.text)}`,
     }))
 }
 
@@ -37,7 +47,7 @@ function unanswered(state: AppState, threadId: string, staffId: string, at: stri
 }
 
 function wantsDesign(state: AppState, person: Staff, text: string): boolean {
-  return isDesigner(person, state.roles) && /design|graphic|poster|logo|visual|artwork|banner|draw|flyer/i.test(text)
+  return isDesigner(person, state.roles) && /design|graphic|poster|logo|visual|artwork|banner|draw|flyer|meeting|agenda/i.test(text)
 }
 
 function inRole(state: AppState, key: string): Staff | null {
@@ -45,9 +55,17 @@ function inRole(state: AppState, key: string): Staff | null {
   return state.staff.find((person) => ids.has(person.roleId) && isStaffActive(state, person)) ?? null
 }
 
+function priorityRank(priority: AppState['tasks'][number]['priority']): number {
+  if (priority === 'urgent') return 0
+  if (priority === 'high') return 1
+  if (priority === 'medium') return 2
+  return 3
+}
+
 /** The next person who should speak: a tagged reply first, then one piece of unprompted role work. */
 export function nextJob(state: AppState, now: number): AgentJob | null {
-  if (!state.settings.agentsWorking || !state.company) return null
+  const company = state.company
+  if (!state.settings.agentsWorking || !company) return null
   for (const message of state.chat) {
     if (message.authorId !== 'owner' || message.mentions.length === 0) continue
     for (const staffId of message.mentions) {
@@ -65,7 +83,13 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
     }
   }
   if (state.settings.marketingReviews !== false) {
-    const waiting = (state.designs ?? []).find((design) => design.status === 'in_review' && design.reviewer === 'marketing')
+    const waiting = (state.designs ?? []).find(
+      (design) =>
+        design.status === 'in_review' &&
+        design.reviewer === 'marketing' &&
+        design.audience !== 'internal' &&
+        design.artStatus !== 'pending',
+    )
     const marketer = inRole(state, 'marketing_manager')
     if (waiting && marketer) {
       return {
@@ -83,24 +107,24 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
   const products = state.products ?? []
   const calendar = state.calendar ?? []
   const unplanned = products.filter((product) => !calendar.some((post) => post.productId === product.id))
-  const goalsNeedProducts = products.length === 0 && offeringsFromGoals(state.company).length > 0
   const marketer = inRole(state, 'marketing_manager')
-  if (marketer && (unplanned.length > 0 || goalsNeedProducts)) {
+  if (marketer && products.length > 0 && unplanned.length > 0) {
     return {
       kind: 'initiative',
       threadId: COMPANY_THREAD,
       staffId: marketer.id,
-      prompt: 'Write the content calendar.',
+      prompt:
+        'Write a detailed monthly content calendar for every product: weekdays, Instagram Feed / Carousel / Reels sizes, TikTok, YouTube thumbnails, captions, and objectives. File it as a PDF. Nothing is posted.',
       intent: 'calendar',
       history: historyFor(state, COMPANY_THREAD, marketer.id),
     }
   }
   const designer = inRole(state, 'graphic_designer') ?? state.staff.find((person) => isDesigner(person, state.roles) && isStaffActive(state, person))
-  const open = (state.designs ?? []).some((design) => design.status === 'in_review')
+  const openDesign = (state.designs ?? []).some((design) => design.status === 'in_review')
   const due = calendar
     .filter((post) => post.status === 'planned' && post.day === state.clock.day)
     .sort((a, b) => a.productId.localeCompare(b.productId) || a.platform.localeCompare(b.platform))
-  if (designer && !open && due[0]) {
+  if (designer && !openDesign && due[0]) {
     const post = due[0]
     const product = products.find((item) => item.id === post.productId)
     return {
@@ -114,6 +138,90 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
       history: historyFor(state, COMPANY_THREAD, designer.id),
     }
   }
+
+  const md = inRole(state, 'md')
+  const pendingGoal = (state.goalProposals ?? []).some((item) => item.status === 'pending')
+  if (md && company.management === 'managing_director' && company.goals.length === 0 && !pendingGoal) {
+    return {
+      kind: 'initiative',
+      threadId: COMPANY_THREAD,
+      staffId: md.id,
+      prompt: company.businessType,
+      intent: 'propose_goal',
+      history: historyFor(state, COMPANY_THREAD, md.id),
+    }
+  }
+
+  const opener = state.staff.find((person) => {
+    const key = roleKeyOf(state, person)
+    if (!DAY_TO_DAY_MANAGER_KEYS.has(key) || !isStaffActive(state, person)) return false
+    if (key === 'md' && company.management !== 'managing_director') return false
+    if (openWorkCount(state, person.id) >= 2) return false
+    const laneBusy = state.tasks.some(
+      (task) =>
+        task.status === 'ready' &&
+        (key === 'md' || task.departmentId === person.departmentId),
+    )
+    if (laneBusy) return false
+    return company.goals.length > 0 && canOpenDayToDay(state, person, person.departmentId)
+  })
+  if (opener && company.goals[0]) {
+    return {
+      kind: 'initiative',
+      threadId: COMPANY_THREAD,
+      staffId: opener.id,
+      prompt: company.goals[0].text,
+      intent: 'spawn',
+      taskTitle: company.goals[0].text,
+      history: historyFor(state, COMPANY_THREAD, opener.id),
+    }
+  }
+
+  const startable = state.tasks
+    .filter((task) => task.status === 'ready' && task.assigneeId && isStaffIdActive(state, task.assigneeId))
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.title.localeCompare(b.title))[0]
+  if (startable?.assigneeId) {
+    return {
+      kind: 'initiative',
+      threadId: COMPANY_THREAD,
+      staffId: startable.assigneeId,
+      prompt: startable.title,
+      intent: 'start',
+      taskId: startable.id,
+      taskTitle: startable.title,
+      history: historyFor(state, COMPANY_THREAD, startable.assigneeId),
+    }
+  }
+
+  const workable = state.tasks
+    .filter((task) => {
+      if (task.status !== 'in_progress' || !task.assigneeId || task.handoff) return false
+      const step = currentStep(task)
+      if (step?.kind !== 'work') return false
+      return isStaffIdActive(state, task.assigneeId)
+    })
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || (a.stepStartedAt ?? 0) - (b.stepStartedAt ?? 0))[0]
+  if (workable?.assigneeId) {
+    const person = state.staff.find((item) => item.id === workable.assigneeId)
+    if (person && (state.agentSeen[person.id] ?? 0) + WORK_GAP <= now) {
+      const already = state.chat.some(
+        (message) => message.authorId === person.id && message.text.includes(workable.title) && message.at >= new Date((workable.stepStartedAt ?? now) - 1000).toISOString(),
+      )
+      if (!already) {
+        return {
+          kind: 'initiative',
+          threadId: COMPANY_THREAD,
+          staffId: person.id,
+          prompt: workable.title,
+          intent: 'work',
+          taskId: workable.id,
+          taskTitle: workable.title,
+          history: historyFor(state, COMPANY_THREAD, person.id),
+        }
+      }
+    }
+  }
+
   const task = state.tasks.find((item) => {
     if (item.status !== 'in_progress' || !item.assigneeId) return false
     const assignee = state.staff.find((person) => person.id === item.assigneeId)
@@ -133,4 +241,10 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
     taskTitle: task.title,
     history: historyFor(state, COMPANY_THREAD, person.id),
   }
+}
+
+function isStaffIdActive(state: AppState, staffId: string | null): boolean {
+  if (!staffId) return false
+  const person = state.staff.find((item) => item.id === staffId)
+  return person ? isStaffActive(state, person) : false
 }

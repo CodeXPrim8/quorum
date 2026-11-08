@@ -5,7 +5,9 @@ export function money(value: number): string {
 export function formatClock(minute: number): string {
   const hours = Math.floor(minute / 60) % 24
   const mins = Math.floor(minute % 60)
-  return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+  const suffix = hours >= 12 ? 'PM' : 'AM'
+  const hour = hours % 12 || 12
+  return `${hour}:${String(mins).padStart(2, '0')} ${suffix}`
 }
 
 export function uid(prefix: string): string {

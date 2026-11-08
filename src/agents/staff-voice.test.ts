@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createSampleState } from '../engine/apply'
+import { createSampleState } from '../engine/fixture'
 import { staffVoice, voiceKind } from './staff-voice'
 
 const now = 1_700_000_000_000

@@ -1,6 +1,9 @@
 /** Server-only OpenAI Live helpers. The API key never leaves this process. */
 
-export const LIVE_MODEL = 'gpt-realtime'
+export const LIVE_MODEL = 'gpt-realtime-2.1'
+export const LIVE_MODEL_FALLBACK = 'gpt-realtime'
+export const LIVE_CALLS_URL = 'https://api.openai.com/v1/realtime/calls'
+export const LIVE_SECRETS_URL = 'https://api.openai.com/v1/realtime/client_secrets'
 
 export const LIVE_INSTRUCTIONS = [
   'You are a voice pipe for Quorum.',
@@ -14,25 +17,37 @@ export function openaiKeyFromEnv(env: Record<string, string | undefined>): strin
   return (env.OPENAI_API_KEY ?? '').trim()
 }
 
-export function sessionCreateBody() {
+export function liveSessionConfig(model = LIVE_MODEL) {
   return {
-    model: LIVE_MODEL,
-    voice: 'coral',
+    type: 'realtime' as const,
+    model,
     instructions: LIVE_INSTRUCTIONS,
-    modalities: ['audio', 'text'],
-    input_audio_transcription: { model: 'gpt-4o-mini-transcribe' },
-    turn_detection: {
-      type: 'server_vad',
-      create_response: false,
-      interrupt_response: true,
-      silence_duration_ms: 700,
+    audio: {
+      input: {
+        transcription: { model: 'gpt-4o-mini-transcribe' },
+        turn_detection: {
+          type: 'server_vad' as const,
+          create_response: false,
+          interrupt_response: true,
+          silence_duration_ms: 700,
+        },
+      },
+      output: { voice: 'ash' },
     },
+  }
+}
+
+export function sessionCreateBody(model = LIVE_MODEL) {
+  return {
+    expires_after: { anchor: 'created_at' as const, seconds: 600 },
+    session: liveSessionConfig(model),
   }
 }
 
 export function publicSessionPayload(raw: unknown): { clientSecret: string; model: string } {
   const data = raw as {
     client_secret?: { value?: string } | string
+    session?: { model?: string }
     model?: string
     value?: string
   }
@@ -41,7 +56,7 @@ export function publicSessionPayload(raw: unknown): { clientSecret: string; mode
       ? data.client_secret
       : data.client_secret?.value ?? data.value ?? ''
   if (!secret) throw new Error('OpenAI did not return a live session.')
-  return { clientSecret: secret, model: data.model || LIVE_MODEL }
+  return { clientSecret: secret, model: data.session?.model || data.model || LIVE_MODEL }
 }
 
 export function stripSecrets<T extends Record<string, unknown>>(payload: T, key: string): T {

@@ -9,11 +9,16 @@ import { OrgChart } from './components/OrgChart'
 import { Overview } from './components/Overview'
 import { People } from './components/People'
 import { Settings } from './components/Settings'
+import { Billing } from './components/Billing'
 import { ErrorState, LoadingState, Shell } from './components/Shell'
 import { Setup } from './components/Setup'
 import { SignIn } from './components/SignIn'
 import { Tasks } from './components/Tasks'
 import { VoiceCall } from './components/VoiceCall'
+import { QuorumVoice } from './components/QuorumVoice'
+import { InstagramDesk } from './agents/instagram-desk'
+import { WhatsAppDesk } from './agents/whatsapp-desk'
+import { WhatsAppView } from './components/WhatsAppView'
 import { OfficeView } from './office/OfficeView'
 import { useStore } from './store/Store'
 import { isStaffActive } from './domain/active'
@@ -22,7 +27,8 @@ import type { ReactNode } from 'react'
 type Route = { view: string; id?: string; extra?: string }
 
 function parseHash(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
+  const cleaned = hash.replace(/^#\/?/, '').split('?')[0]
+  const parts = cleaned.split('/').filter(Boolean)
   return { view: parts[0] || 'overview', id: parts[1], extra: parts[2] }
 }
 
@@ -31,6 +37,7 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash))
   const [now, setNow] = useState(() => Date.now())
   const [call, setCall] = useState<{ threadId: string; memberIds: string[]; docked: boolean } | null>(null)
+  const [quorumCall, setQuorumCall] = useState<string | null>(null)
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash(window.location.hash))
@@ -86,34 +93,67 @@ export function App() {
     case 'chat':
       content = <ChatView state={state} dispatch={dispatch} now={now} selectedId={route.id} onJoinCall={startCall} />
       break
+    case 'whatsapp':
+      content = <WhatsAppView state={state} dispatch={dispatch} selectedId={route.id} />
+      break
     case 'activity':
       content = <ActivityLog state={state} now={now} />
       break
     case 'integrations':
-      content = <IntegrationsPanel state={state} />
+      content = <IntegrationsPanel state={state} dispatch={dispatch} />
       break
     case 'company':
       content = <Settings state={state} dispatch={dispatch} />
       break
+    case 'billing':
+      content = <Billing company={state.company} dispatch={dispatch} />
+      break
+    case 'history':
+      content = (
+        <Overview
+          state={state}
+          dispatch={dispatch}
+          talking
+          threadId={route.id}
+          onVoice={(id) => {
+            setQuorumCall(id)
+            void holdMicrophone()
+          }}
+        />
+      )
+      break
     default:
-      content = <Overview state={state} now={now} />
+      content = (
+        <Overview
+          state={state}
+          dispatch={dispatch}
+          onVoice={(id) => {
+            setQuorumCall(id)
+            void holdMicrophone()
+          }}
+        />
+      )
   }
 
   return (
     <Shell
       state={state}
       view={route.view === 'company' ? 'company' : route.view}
+      historyId={route.view === 'history' ? route.id : undefined}
       account={session?.email}
       onSignOut={cloud ? signOut : undefined}
+      dispatch={dispatch}
     >
       <AgentDesk state={state} dispatch={dispatch} />
+      <WhatsAppDesk state={state} dispatch={dispatch} />
+      <InstagramDesk state={state} dispatch={dispatch} />
       {content}
       {call && (
         <VoiceCall
           people={state.staff.filter((person) => call.memberIds.includes(person.id) && isStaffActive(state, person))}
           threadId={call.threadId}
           state={state}
-          dispatch={dispatch}
+          dispatch={dispatch}               
           docked={call.docked}
           onClose={() => {
             dispatch({ type: 'SET_ON_CALL', staffIds: [] })
@@ -129,6 +169,9 @@ export function App() {
           }}
           onExpand={() => setCall({ ...call, docked: false })}
         />
+      )}
+      {quorumCall && (
+        <QuorumVoice threadId={quorumCall} state={state} dispatch={dispatch} onClose={() => setQuorumCall(null)} />
       )}
     </Shell>
   )

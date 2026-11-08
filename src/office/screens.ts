@@ -40,7 +40,7 @@ function paint(ctx: CanvasRenderingContext2D, roomId: string, title: string) {
     return
   }
   if (roomId === 'technology') {
-    const lines = ['const launch = check()', 'sync offline quizzes', 'import priceList', 'ready: classroom os']
+    const lines = ['const status = check()', 'sync services', 'import priceList', 'ready: internal']
     ctx.font = '14px Consolas, monospace'
     lines.forEach((line, index) => {
       ctx.fillStyle = index === 0 ? '#7dffa8' : '#b7d4ff'

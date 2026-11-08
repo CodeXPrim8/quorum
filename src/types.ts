@@ -1,3 +1,5 @@
+import type { MemoryNote } from './domain/memory'
+
 export const PERMISSIONS = [
   { id: 'catalog.read', label: 'Read the product catalog', group: 'everyday' },
   { id: 'crm.read', label: 'Read sales leads', group: 'everyday' },
@@ -151,6 +153,12 @@ export type Company = {
   ownerTitle: 'Chairman' | 'CEO'
   /** How staff address you on a call: sir or ma. Missing on older saves until you set it. */
   ownerGender?: OwnerGender
+  /** Public site. Optional. Staff who set goals or draft tax read it when it is set. */
+  website?: string
+  /** Optional profile links. The graphic designer uses these when a post is needed. */
+  social?: Partial<Record<'youtube' | 'tiktok' | 'instagram' | 'linkedin', string>>
+  /** Missing on older saves is Standard (`starter`). */
+  planId?: 'lite' | 'starter' | 'pro' | 'enterprise' | 'byok'
   management: 'direct' | 'managing_director'
   createdAt: string
 }
@@ -174,6 +182,8 @@ export type Role = {
   departmentId: string
   reportsToRoleId: string | null
   enabled: boolean
+  /** The result this role is measured on. */
+  kpi?: string
   defaultPermissions: PermissionId[]
 }
 
@@ -222,7 +232,12 @@ export type Task = {
   priority: Priority
   assigneeId: string | null
   departmentId: string
-  source: 'demo_playbook' | 'owner'
+  /** staff = playbook inside Quorum. owner = created by you. manager = MD or department manager. */
+  source: 'staff' | 'owner' | 'manager'
+  /** Staff id when a manager or the MD opened the task. */
+  createdById?: string
+  /** Approved company goal this task serves. */
+  goalId?: string
   playbook: PlaybookStep[]
   stepIndex: number
   stepStartedAt: number | null
@@ -262,7 +277,8 @@ export type Approval = {
   outcome?: string
 }
 
-export type IntegrationStatus = 'not_connected' | 'demo_data'
+/** in_app = staff tools that run inside Quorum. not_connected = no outside system linked. */
+export type IntegrationStatus = 'not_connected' | 'in_app'
 
 export type Integration = {
   id: string
@@ -274,14 +290,90 @@ export type Integration = {
   usedBy: string
 }
 
-export type DesktopAccess = {
-  /**
-   * This build has no desktop agent. The flag is a literal so a UI change
-   * cannot imply the computer is being viewed or controlled.
-   */
-  agentConnected: false
-  sessionActive: false
+export type DesktopMode = 'approved' | 'live'
+
+/** Work filed inside Quorum after approval (outbox / ledger / CRM-style notes). */
+export type WaAuthor = 'client' | 'quorum'
+
+export type WaDelivery = 'received' | 'queued' | 'held' | 'sent' | 'failed'
+
+/** One company WhatsApp thread. The phone is the client's WhatsApp id. */
+export type WaChat = {
+  id: string
+  name: string
+  phone: string
+  messages: WaMessage[]
+  assigneeId: string | null
+  taskId: string | null
+  updatedAt: string
 }
+
+export type WaMessage = {
+  id: string
+  at: string
+  author: WaAuthor
+  text: string
+  status: WaDelivery
+}
+
+export type CompanyRecord = {
+  id: string
+  kind: 'crm' | 'email' | 'social' | 'pr' | 'calendar' | 'purchase' | 'finance' | 'hr'
+  title: string
+  body: string
+  taskId?: string
+  staffId?: string
+  status: 'held' | 'filed'
+  at: string
+}
+
+export type DesktopAccess = {
+  /** True when the local desktop agent API on this computer is reachable. */
+  agentConnected: boolean
+  /** True only while the owner has an explicit, revocable session open. */
+  sessionActive: boolean
+  /** Chosen when the session starts; null when no session. */
+  mode: DesktopMode | null
+  startedAt?: string
+  /** Staff currently allowed to run desktop actions after approval. */
+  grantedStaffId?: string
+  grantedTaskId?: string
+  /** True while Quorum itself has a granted computer run. */
+  grantedQuorum?: boolean
+}
+
+/** Public Meta connection status for this company (no tokens). */
+export type CompanyMetaChannel = {
+  connected: boolean
+  source: 'company' | 'env' | 'none'
+  username?: string
+  accountId?: string
+  phoneNumberId?: string
+  displayPhone?: string
+}
+
+export type CompanyMetaStatus = {
+  appReady: boolean
+  canHost: boolean
+  instagram: CompanyMetaChannel
+  whatsapp: CompanyMetaChannel
+}
+
+export type QuorumAsk = {
+  reason: string
+  prompt: string
+  status: 'pending' | 'granted' | 'declined' | 'done'
+  at: string
+  threadId?: string
+  /** Steps already taken when Quorum pauses for extra permission. */
+  steps?: string[]
+}
+
+/** What Quorum is showing on its screen: a public page, a picture, or a PDF. */
+export type QuorumScreen =
+  | { kind: 'page'; url: string; title?: string; image?: string; summary?: string }
+  | { kind: 'image'; src: string; caption?: string; made?: boolean }
+  | { kind: 'pdf'; messageId: string; title?: string }
 
 export type Settings = {
   reducedMotion: boolean
@@ -289,6 +381,8 @@ export type Settings = {
   showFloor: boolean
   /** Staff answer chats and keep doing role work while this is on. */
   agentsWorking: boolean
+  /** When true, the office clock follows this computer's local time. */
+  realTime?: boolean
   /**
    * When this is not false, the marketing manager reviews a graphic
    * before you give the final approval. Turn it off to review them yourself.
@@ -313,7 +407,7 @@ export type StaffReport = {
   text: string
 }
 
-export type DesignStatus = 'in_review' | 'changes' | 'approved' | 'held' | 'declined'
+export type DesignStatus = 'in_review' | 'changes' | 'approved' | 'held' | 'published' | 'declined'
 
 export type ProductKind = 'hardware' | 'software' | 'service'
 
@@ -330,7 +424,10 @@ export type SocialPlatform = 'instagram' | 'tiktok' | 'youtube'
 
 export type PostFormat = 'flyer' | 'carousel' | 'cover' | 'thumbnail'
 
-export type CalendarStatus = 'planned' | 'in_review' | 'held' | 'declined'
+/** Pixel / placement size Maya should design for. */
+export type CreativeSize = 'feed_square' | 'reel' | 'story' | 'carousel' | 'thumbnail'
+
+export type CalendarStatus = 'planned' | 'in_review' | 'held' | 'published' | 'declined'
 
 /** One post on one platform, written by the marketing manager. */
 export type CalendarPost = {
@@ -344,9 +441,31 @@ export type CalendarPost = {
   format: PostFormat
   status: CalendarStatus
   designId?: string
+  /** Instagram Feed, Reels, carousel, etc. */
+  size?: CreativeSize
+  /** Human size line, e.g. Instagram Feed · 1080×1080. */
+  sizeLabel?: string
+  weekday?: string
+  monthName?: string
+  /** e.g. Week 2 · Monday. */
+  dateLabel?: string
+  /** Draft caption for the social manager. */
+  caption?: string
+  /** Why this post exists on that day. */
+  objective?: string
+  /** Carousel slide count when format is carousel. */
+  slides?: number
 }
 
-/** A graphic made inside Quorum. It is not a file from a design tool. */
+/** Draft rows the marketing manager can hand to PLAN_CALENDAR after the model polishes them. */
+export type CalendarDraft = Omit<CalendarPost, 'id' | 'status' | 'designId'>
+
+export type DesignArtStatus = 'pending' | 'ready' | 'studio'
+
+/** Promotional graphics may go to social later. Internal graphics stay inside Quorum. */
+export type DesignAudience = 'promotional' | 'internal'
+
+/** A graphic Maya made in Quorum. A photograph layer may come from the server; nothing is posted outside Quorum until social is connected, and never for internal work. */
 export type Design = {
   id: string
   title: string
@@ -356,14 +475,25 @@ export type Design = {
   createdById: string
   status: DesignStatus
   revision: number
+  /** Promotional = products/services for social. Internal = meetings and in-house notices. */
+  audience?: DesignAudience
+  /** Where the draft waits for approval. Internal drafts use a DM; promotional use the company group. */
+  threadId?: string
   calendarId?: string
   platform?: SocialPlatform
   format?: PostFormat
+  productName?: string
+  fact?: string
+  /** JPEG/PNG data URL for the photograph layer. Typography stays in `svg`. */
+  art?: string
+  artStatus?: DesignArtStatus
+  /** Last revision note, used only for the photograph direction. Not printed on the poster. */
+  direction?: string
   /** Who looks at this graphic next. The owner can still approve either way. */
   reviewer?: 'marketing' | 'owner'
 }
 
-export type ChatThreadKind = 'company' | 'direct' | 'group' | 'line'
+export type ChatThreadKind = 'company' | 'quorum' | 'direct' | 'group' | 'line'
 
 export type ChatThread = {
   id: string
@@ -372,12 +502,21 @@ export type ChatThread = {
   /** Staff in the thread. The owner is always included and is not listed here. */
   memberIds: string[]
   createdAt: string
+  /** When you last opened this thread. Messages after this are unread. */
+  ownerReadAt?: string
 }
 
 export type ChatFile = {
   name: string
   mime: string
   dataUrl: string
+}
+
+export type QuorumDocument = {
+  kind: string
+  title: string
+  body: string
+  preparedFor?: string
 }
 
 export type ChatMessage = {
@@ -389,8 +528,19 @@ export type ChatMessage = {
   text: string
   designId?: string
   file?: ChatFile
+  document?: QuorumDocument
   /** Staff ids this message prompts. `all` is expanded to those ids before it is stored. */
   mentions: string[]
+}
+
+export type GoalProposal = {
+  id: string
+  text: string
+  status: 'pending' | 'approved' | 'rejected'
+  proposedById: string
+  createdAt: string
+  decidedAt?: string
+  note?: string
 }
 
 export type AppState = {
@@ -404,6 +554,8 @@ export type AppState = {
   approvals: Approval[]
   integrations: Integration[]
   desktop: DesktopAccess
+  /** Instagram / WhatsApp link status for this company. Missing until Integrations loads it. */
+  meta?: CompanyMetaStatus
   settings: Settings
   clock: OfficeClock
   threads: ChatThread[]
@@ -415,10 +567,25 @@ export type AppState = {
   calendar: CalendarPost[]
   /** Daily notes staff filed to their managers. The owner sees the compiled version on cadence. */
   reports: StaffReport[]
+  /**
+   * Approved consequential work that stays in Quorum: email/social/PR holds,
+   * purchase notes, finance entries, and HR packs. Not an outside mailbox or network.
+   */
+  records: CompanyRecord[]
+  /** Client chats on the company WhatsApp line. Missing on older saves. */
+  whatsapp?: WaChat[]
+  /** Goals the MD proposed. They are not live until you approve them. */
+  goalProposals: GoalProposal[]
+  /** Lessons the company keeps: owner instructions, decisions, and what the site said. */
+  memory?: MemoryNote[]
   /** Last time each staff member spoke, in epoch ms. Stops the same person repeating. */
   agentSeen: Record<string, number>
   /** Last time someone started work on their own. */
   agentPulse: number
+  /** Quorum asking to use this computer. */
+  quorumAsk?: QuorumAsk
+  /** Last page or picture Quorum put on its screen. */
+  quorumScreen?: QuorumScreen | null
 }
 
 export type CompanyInput = {
@@ -428,6 +595,8 @@ export type CompanyInput = {
   ownerName: string
   ownerTitle: 'Chairman' | 'CEO'
   ownerGender: OwnerGender
+  website?: string
+  social?: Partial<Record<'youtube' | 'tiktok' | 'instagram' | 'linkedin', string>>
   appointMd: boolean
   enabledDepartmentKeys: string[]
   enabledRoleKeys: string[]
@@ -462,12 +631,13 @@ export type TaskInput = {
 
 export type Command =
   | { type: 'TICK' }
-  | { type: 'LOAD_SAMPLE' }
+  | { type: 'REMEMBER'; kind: 'fact' | 'decision' | 'site'; text: string }
   | { type: 'RESET' }
   | { type: 'CREATE_COMPANY'; input: CompanyInput }
+  | { type: 'SET_BILLING_PLAN'; planId: 'lite' | 'starter' | 'pro' | 'enterprise' | 'byok' }
   | {
       type: 'UPDATE_COMPANY'
-      patch: Partial<Pick<Company, 'name' | 'businessType' | 'ownerName' | 'ownerTitle' | 'ownerGender'>>
+      patch: Partial<Pick<Company, 'name' | 'businessType' | 'ownerName' | 'ownerTitle' | 'ownerGender' | 'website' | 'social'>>
     }
   | { type: 'ADD_GOAL'; text: string }
   | { type: 'REMOVE_GOAL'; goalId: string }
@@ -492,6 +662,10 @@ export type Command =
   | { type: 'SET_STAFF_ENABLED'; staffId: string; enabled: boolean }
   | { type: 'SET_PERMISSION'; staffId: string; permissionId: PermissionId; granted: boolean }
   | { type: 'CREATE_TASK'; input: TaskInput }
+  | { type: 'UPDATE_TASK'; taskId: string; patch: Partial<Pick<TaskInput, 'title' | 'description' | 'priority' | 'assigneeId'>> }
+  | { type: 'STAFF_CREATE_TASK'; staffId: string; input: TaskInput; goalId?: string }
+  | { type: 'PROPOSE_GOAL'; staffId: string; text: string }
+  | { type: 'DECIDE_GOAL'; proposalId: string; decision: 'approved' | 'rejected'; text?: string }
   | { type: 'SET_PRIORITY'; taskId: string; priority: Priority }
   | { type: 'PAUSE_TASK'; taskId: string }
   | { type: 'RESUME_TASK'; taskId: string }
@@ -500,25 +674,50 @@ export type Command =
   | { type: 'ADD_BLOCKER'; taskId: string; text: string }
   | { type: 'CLEAR_BLOCKER'; taskId: string; blockerId: string }
   | { type: 'ADVANCE_TASK'; taskId?: string }
+  | { type: 'COMPLETE_WORK'; taskId: string; staffId: string; text: string; result?: string }
   | { type: 'REVIEW_TASK'; taskId: string; decision: 'accept' | 'changes'; note: string }
   | { type: 'DECIDE_APPROVAL'; approvalId: string; decision: 'approved' | 'rejected'; note: string }
   | { type: 'REQUEST_APPROVAL'; taskId: string }
   | { type: 'CALL_MEETING' }
   | { type: 'END_MEETING' }
   | { type: 'SET_ON_CALL'; staffIds: string[] }
-  | { type: 'REQUEST_DESIGN'; brief: string; calendarId?: string }
-  | { type: 'PLAN_CALENDAR' }
+  | { type: 'REQUEST_DESIGN'; brief: string; calendarId?: string; audience?: DesignAudience }
+  | { type: 'SET_DESIGN_ART'; designId: string; image?: string }
+  | { type: 'PLAN_CALENDAR'; drafts?: CalendarDraft[] }
   | { type: 'REVIEW_DESIGN'; designId: string; decision: 'approved' | 'changes' | 'declined'; note?: string; by?: 'owner' | 'marketing' }
   | { type: 'SET_MARKETING_REVIEW'; enabled: boolean }
   | { type: 'SET_REPORT_CADENCE'; cadence: ReportCadence }
   | { type: 'SEND_MESSAGE'; threadId: string; text: string; wake?: boolean }
+  | { type: 'NEW_QUORUM_CHAT'; id: string }
+  | { type: 'RENAME_QUORUM_CHAT'; threadId: string; name: string }
+  | { type: 'DELETE_QUORUM_CHAT'; threadId: string }
+  | { type: 'QUORUM_MESSAGE'; text: string; threadId?: string }
+  | { type: 'MAKE_QUORUM_PDF'; messageId: string }
+  | { type: 'EDIT_QUORUM_DOCUMENT'; messageId: string; body: string; title?: string }
+  | { type: 'EDIT_OWNER_MESSAGE'; messageId: string; text: string }
+  | { type: 'RETRY_QUORUM'; threadId: string }
+  | { type: 'ASK_QUORUM_DESKTOP'; reason: string; prompt: string; threadId?: string; steps?: string[] }
+  | { type: 'DECIDE_QUORUM_DESKTOP'; decision: 'granted' | 'declined' }
+  | { type: 'FINISH_QUORUM_DESKTOP' }
+  | { type: 'SET_QUORUM_SCREEN'; screen: QuorumScreen | null }
+  | { type: 'READ_THREAD'; threadId: string }
   | { type: 'CREATE_GROUP'; id: string; name: string; memberIds: string[] }
   | { type: 'AGENT_MESSAGE'; threadId: string; staffId: string; text: string; designBrief?: string; calendarId?: string; initiative?: boolean }
   | { type: 'POST_MINUTES'; threadId: string; staffId: string; text: string; file: ChatFile }
   | { type: 'SET_AGENTS'; working: boolean }
+  | { type: 'SET_REAL_TIME'; value: boolean }
   | { type: 'SET_ENGINE'; running: boolean }
   | { type: 'SET_REDUCED_MOTION'; value: boolean }
   | { type: 'SET_FLOOR'; visible: boolean }
+  | { type: 'SET_DESKTOP_AGENT'; connected: boolean }
+  | { type: 'START_DESKTOP_SESSION'; mode: DesktopMode }
+  | { type: 'END_DESKTOP_SESSION' }
+  | { type: 'CLEAR_DESKTOP_GRANT' }
+  | { type: 'SET_COMPANY_META'; meta: CompanyMetaStatus }
+  | { type: 'WHATSAPP_INBOUND'; phone: string; name: string; text: string; messageId: string; linked: boolean }
+  | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sent' | 'held' | 'failed' }
+  | { type: 'WHATSAPP_DROP'; phone: string }
+  | { type: 'INSTAGRAM_RESULT'; designId: string; status: 'published' | 'failed'; error?: string; mediaId?: string }
 
 export type OrgNode = {
   id: string

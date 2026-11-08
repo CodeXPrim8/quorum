@@ -150,6 +150,11 @@ function Profile({
       <p className="eyebrow">{person.title}</p>
       <h2>{person.name}</h2>
       <p>{purpose ?? person.purpose}</p>
+      {state.roles.find((role) => role.id === person.roleId)?.kpi && (
+        <p className="role-kpi">
+          <span>KPI</span> {state.roles.find((role) => role.id === person.roleId)?.kpi}
+        </p>
+      )}
       <div className="life-pills">
         <span>{money(person.life.balance)}</span>
         <span>{money(person.life.salary)} pay</span>
@@ -229,7 +234,7 @@ function Profile({
       )}
       <h3>Access</h3>
       <p className="fine">
-        Everyday tools can be used on sample data inside Quorum. Consequential tools only let them ask. You still
+        Everyday tools work inside Quorum. Consequential tools only let them ask. You still
         approve each publish, message, purchase, finance change, hire, or desktop request.
       </p>
       <ul className="perms">
@@ -259,8 +264,8 @@ function Profile({
       <div className="desktop-card">
         <h3>Desktop control</h3>
         <p>
-          Separate from every other tool. Granting it only lets {person.name.split(' ')[0]} request a session. This
-          build has no desktop agent, so the screen stays private and the pointer never moves.
+          Separate from every other tool. Granting it only lets {person.name.split(' ')[0]} request control. You still
+          start a session on Integrations (Approved or Live) and approve each request.
         </p>
         <label className="check">
           <input
@@ -277,7 +282,13 @@ function Profile({
           />
           May request desktop control
         </label>
-        <p className="fine">Session active: no. Agent connected: no.</p>
+        <p className="fine">
+          Agent: {state.desktop.agentConnected ? 'connected' : 'offline'}. Session:{' '}
+          {state.desktop.sessionActive
+            ? `active (${state.desktop.mode === 'live' ? 'Live' : 'Approved'})`
+            : 'off'}
+          .
+        </p>
       </div>
       <h3>Recent activity</h3>
       {events.length === 0 ? (
