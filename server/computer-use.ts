@@ -475,6 +475,7 @@ export async function actOnComputer(
   token: string | undefined,
   action: ComputerAction,
   approved = false,
+  approvedStake = false,
 ): Promise<ComputerActResult> {
   session(token)
   if (!target) throw new Error('Choose a window before Quorum uses the computer.')
@@ -487,6 +488,7 @@ export async function actOnComputer(
   const gate = gateComputerAction(action, {
     processName: target.processName,
     control: control ? { id: control.id, name: control.name, role: control.role } : undefined,
+    approvedStake,
   })
   if (gate.gate === 'deny') throw new Error(gate.reason)
   if (gate.gate === 'handoff') return { ok: false, handoff: true, reason: gate.reason }

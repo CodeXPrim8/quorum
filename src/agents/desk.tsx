@@ -7,7 +7,7 @@ import { nextJob } from './jobs'
 import { reviewGraphic } from './review'
 import { setTyping } from './status'
 import { artCommand, designStudioReady, pendingArt, requestDesignArt, requestQuorumPicture } from './studio'
-import { allowQuorumDesktop, endDesktopUsing, probeDesktopAgent, runDesktopGrant, runQuorumDesktop, writeDesktopToken } from './desktop'
+import { allowQuorumDesktop, endDesktopUsing, probeDesktopAgent, runDesktopGrant, runQuorumDesktop, startDesktopServerSession, writeDesktopToken } from './desktop'
 import {
   answerQuorum,
   desktopReasonFor,
@@ -15,10 +15,13 @@ import {
   grantsDesktop,
   needsDesktop,
   pendingQuorumPrompt,
+  wantsProgram,
   threadAlreadyAllowed,
 } from './quorum'
 import { draftGoal, draftManagerTask, goalIdFor } from './initiative'
 import { produceStaffWork } from './work'
+
+const deskStakeRuns = new Set<string>()
 
 /** While the company is open, tagged staff reply and one person at a time does role work. */
 export function AgentDesk({ state, dispatch }: { state: AppState; dispatch: (command: Command) => void }) {
@@ -116,10 +119,33 @@ export function AgentDesk({ state, dispatch }: { state: AppState; dispatch: (com
         dispatchRef.current({
           type: 'QUORUM_MESSAGE',
           text: alreadyAllowed
-            ? `You already allowed this computer. I will follow this in the open window, and I will not send it: ${pending.text}`
+            ? wantsProgram(pending.text)
+              ? `You already allowed this computer. I will open the program and do this there: ${pending.text}`
+              : `You already allowed this computer. I will follow this in the open window, and I will not send it: ${pending.text}`
             : turn.text,
           threadId: pending.threadId,
         })
+        if (turn.slip) {
+          let bookLine = 'No bookmaker is connected. Connect one under Integrations before this can be placed.'
+          const companyId = current.company?.id
+          if (companyId) {
+            try {
+              const response = await fetch(`/api/venues/status?companyId=${encodeURIComponent(companyId)}`)
+              const data = (await response.json()) as {
+                venues?: Array<{ name: string; market: string; connected: boolean; loginUrl: string }>
+              }
+              const book = (data.venues ?? []).find((item) => item.market === 'sports' && item.connected && item.loginUrl)
+              if (book) bookLine = `Book: ${book.name} ${book.loginUrl}`
+            } catch {
+              bookLine = 'The bookmaker list could not be read. Connect one under Integrations.'
+            }
+          }
+          dispatchRef.current({
+            type: 'FILE_SPORTS_SLIP',
+            title: turn.slip.event,
+            detail: `${bookLine}\n\n${turn.text}`,
+          })
+        }
         if (turn.screen) dispatchRef.current({ type: 'SET_QUORUM_SCREEN', screen: turn.screen })
         if (turn.generate) {
           try {
@@ -175,6 +201,47 @@ export function AgentDesk({ state, dispatch }: { state: AppState; dispatch: (com
       window.clearInterval(id)
     }
   }, [])
+
+  const stakeId = state.pendingStake?.taskId ?? ''
+
+  useEffect(() => {
+    if (!stakeId) return
+    const stakesStarted = (deskStakeRuns as Set<string>)
+    if (stakesStarted.has(stakeId)) return
+    stakesStarted.add(stakeId)
+    const place = async () => {
+      const current = stateRef.current
+      const stake = current.pendingStake
+      if (!stake || stake.taskId !== stakeId) return
+      const threadId = current.threads.find((item) => item.kind === 'quorum')?.id
+      setTyping({ threadId: threadId ?? 'thread_quorum', name: 'Quorum' })
+      try {
+        if (!current.desktop.sessionActive) {
+          await startDesktopServerSession()
+          dispatchRef.current({ type: 'SET_DESKTOP_AGENT', connected: true })
+          dispatchRef.current({ type: 'START_DESKTOP_SESSION', mode: 'live' })
+        }
+        const placed = await runQuorumDesktop(stateRef.current, stake.instruction)
+        dispatchRef.current({
+          type: 'QUORUM_MESSAGE',
+          text: placed.text,
+          threadId,
+        })
+        dispatchRef.current({ type: 'FINISH_STAKE', taskId: stake.taskId, result: placed.result })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Quorum Desktop could not place the slip.'
+        dispatchRef.current({
+          type: 'QUORUM_MESSAGE',
+          text: `${message} Download Quorum Desktop from the top bar, open that file, and ask for the slip again.`,
+          threadId,
+        })
+        dispatchRef.current({ type: 'FINISH_STAKE', taskId: stakeId, result: message })
+      } finally {
+        setTyping(null)
+      }
+    }
+    void place()
+  }, [stakeId])
 
   const quorumGrant =
     state.desktop.grantedQuorum && state.quorumAsk?.status === 'granted'

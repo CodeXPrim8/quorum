@@ -18,6 +18,10 @@ export const PERMISSIONS = [
   { id: 'purchase.create', label: 'Place purchase orders', group: 'consequential', action: 'purchase' },
   { id: 'finance.write', label: 'Change financial records', group: 'consequential', action: 'finance_change' },
   { id: 'hr.hire', label: 'Make hiring decisions', group: 'consequential', action: 'hiring' },
+  { id: 'trade.propose', label: 'Propose crypto and forex trades', group: 'everyday' },
+  { id: 'trade.execute', label: 'Place or cancel a live trade', group: 'consequential', action: 'trade_execute' },
+  { id: 'bet.propose', label: 'Propose a sports slip', group: 'everyday' },
+  { id: 'bet.place', label: 'Place an approved sports slip', group: 'consequential', action: 'bet_place' },
   { id: 'desktop.control', label: 'Control this computer', group: 'desktop', action: 'desktop_control' },
 ] as const
 
@@ -29,6 +33,8 @@ export type ConsequentialAction =
   | 'purchase'
   | 'finance_change'
   | 'hiring'
+  | 'trade_execute'
+  | 'bet_place'
   | 'desktop_control'
 
 export type TaskStatus =
@@ -318,7 +324,7 @@ export type WaMessage = {
 
 export type CompanyRecord = {
   id: string
-  kind: 'crm' | 'email' | 'social' | 'pr' | 'calendar' | 'purchase' | 'finance' | 'hr'
+  kind: 'crm' | 'email' | 'social' | 'pr' | 'calendar' | 'purchase' | 'finance' | 'hr' | 'trade' | 'bet'
   title: string
   body: string
   taskId?: string
@@ -586,6 +592,8 @@ export type AppState = {
   quorumAsk?: QuorumAsk
   /** Last page or picture Quorum put on its screen. */
   quorumScreen?: QuorumScreen | null
+  /** An approved sports slip waiting for Quorum Desktop to place it. */
+  pendingStake?: { taskId: string; instruction: string } | null
 }
 
 export type CompanyInput = {
@@ -677,6 +685,8 @@ export type Command =
   | { type: 'COMPLETE_WORK'; taskId: string; staffId: string; text: string; result?: string }
   | { type: 'REVIEW_TASK'; taskId: string; decision: 'accept' | 'changes'; note: string }
   | { type: 'DECIDE_APPROVAL'; approvalId: string; decision: 'approved' | 'rejected'; note: string }
+  | { type: 'FILE_SPORTS_SLIP'; title: string; detail: string }
+  | { type: 'FINISH_STAKE'; taskId: string; result: string }
   | { type: 'REQUEST_APPROVAL'; taskId: string }
   | { type: 'CALL_MEETING' }
   | { type: 'END_MEETING' }

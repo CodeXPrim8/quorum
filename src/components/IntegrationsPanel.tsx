@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { endDesktopServerSession, startDesktopServerSession } from '../agents/desktop'
+import { lookupBook, type BookHit, type TradingVenue } from '../domain/venues'
 import type { AppState, Command, CompanyMetaStatus, DesktopMode, Integration } from '../types'
 
 const GROUPS: Array<{ title: string; ids: string[] }> = [
@@ -99,6 +100,7 @@ export function IntegrationsPanel({
           <p className="lede">Open a name to see what it does. Each company connects its own Meta accounts here.</p>
         </div>
       </header>
+      <MarketsConnect companyId={companyId} />
       {flash && (
         <p className="note int-flash" role="status">
           {flash}
@@ -136,6 +138,170 @@ export function IntegrationsPanel({
         })}
       </div>
     </div>
+  )
+}
+
+function MarketsConnect({ companyId }: { companyId: string | undefined }) {
+  const [venues, setVenues] = useState<Array<TradingVenue & { connected: boolean }>>([])
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [hit, setHit] = useState<BookHit | null>(null)
+
+  const load = async () => {
+    if (!companyId) return
+    const response = await fetch(`/api/venues/status?companyId=${encodeURIComponent(companyId)}`)
+    if (!response.ok) return
+    const data = (await response.json()) as { venues?: Array<TradingVenue & { connected: boolean }> }
+    setVenues(data.venues ?? [])
+  }
+
+  useEffect(() => {
+    void load().catch(() => undefined)
+  }, [companyId])
+
+  const connect = async (venueId: string, extra?: { name: string; loginUrl: string }) => {
+    if (!companyId) {
+      setError('Open a company first.')
+      return
+    }
+    setBusy(venueId)
+    setError(null)
+    try {
+      const response = await fetch('/api/venues/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyId, venueId, name: extra?.name, loginUrl: extra?.loginUrl }),
+      })
+      const data = (await response.json()) as { loginUrl?: string; error?: string }
+      if (!response.ok || !data.loginUrl) throw new Error(data.error || 'Could not connect.')
+      window.open(data.loginUrl, '_blank', 'noopener,noreferrer')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not connect.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const disconnect = async (venueId: string) => {
+    if (!companyId) return
+    setBusy(venueId)
+    setError(null)
+    try {
+      const response = await fetch('/api/venues/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companyId, venueId }),
+      })
+      if (!response.ok) throw new Error('Could not disconnect.')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not disconnect.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const search = () => {
+    const found = lookupBook(query)
+    setHit(found)
+    if (!found) setError('Type a bookmaker name or paste its web address.')
+    else setError(null)
+  }
+
+  const trading = venues.filter((venue) => venue.market !== 'sports')
+  const books = venues.filter((venue) => venue.market === 'sports')
+  const hitVisible = hit && !books.some((venue) => venue.id === hit.id)
+
+  return (
+    <>
+      <section className="markets-gallery">
+        <h2>Trading platforms</h2>
+        <p className="lede">
+          Click Connect and log in. Quorum stays linked and can trade on that account until you Disconnect. Live orders still wait for your approval. Nothing is withdrawn.
+        </p>
+        <VenueList venues={trading} busy={busy} companyId={companyId} connect={connect} disconnect={disconnect} />
+      </section>
+      <section className="markets-gallery">
+        <h2>Bookmakers</h2>
+        <p className="lede">
+          Near-sure pattern from the research. You approve the stake. The link lasts until Disconnect. Quorum will not call a bet a guaranteed win.
+        </p>
+        <form
+          className="book-search"
+          onSubmit={(event) => {
+            event.preventDefault()
+            search()
+          }}
+        >
+          <input
+            aria-label="Search bookmakers"
+            placeholder="Search a bookmaker or paste its address"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <button type="submit" className="btn">
+            Search
+          </button>
+        </form>
+        {hitVisible && hit && (
+          <div className="int-row">
+            <div className="int-bar">
+              <strong>{hit.name}</strong>
+              <span className="fine">{hit.listed ? 'Listed' : 'Use this address, or paste the login page'}</span>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy === hit.id || !companyId}
+                onClick={() => void connect(hit.id, hit.listed ? undefined : { name: hit.name, loginUrl: hit.loginUrl })}
+              >
+                Connect
+              </button>
+            </div>
+          </div>
+        )}
+        <VenueList venues={books} busy={busy} companyId={companyId} connect={connect} disconnect={disconnect} />
+        {error && <p className="note">{error}</p>}
+      </section>
+    </>
+  )
+}
+
+function VenueList({
+  venues,
+  busy,
+  companyId,
+  connect,
+  disconnect,
+}: {
+  venues: Array<TradingVenue & { connected: boolean }>
+  busy: string | null
+  companyId: string | undefined
+  connect: (venueId: string, extra?: { name: string; loginUrl: string }) => Promise<void>
+  disconnect: (venueId: string) => Promise<void>
+}) {
+  return (
+    <ul className="int-list">
+      {venues.map((venue) => (
+        <li key={venue.id} className="int-row">
+          <div className="int-bar">
+            <strong>{venue.name}</strong>
+            <span className="fine">{venue.market === 'crypto' ? 'Crypto' : venue.market === 'forex' ? 'Forex' : 'Sports'}</span>
+            <span className={venue.connected ? 'tag on' : 'tag'}>{venue.connected ? 'Connected' : 'Not connected'}</span>
+            {venue.connected ? (
+              <button type="button" className="btn" disabled={busy === venue.id} onClick={() => void disconnect(venue.id)}>
+                Disconnect
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" disabled={busy === venue.id || !companyId} onClick={() => void connect(venue.id)}>
+                Connect
+              </button>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
   )
 }
 

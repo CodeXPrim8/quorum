@@ -17,6 +17,21 @@ describe('computer-use policy', () => {
     ).toBe('approve')
   })
 
+  it('lets an approved slip confirm, and still holds a purchase', () => {
+    expect(
+      gateComputerAction(
+        { kind: 'click', controlId: 'c4' },
+        { processName: 'chrome', approvedStake: true, control: { id: 'c4', name: 'Submit', role: 'Button' } },
+      ).gate,
+    ).toBe('allow')
+    expect(
+      gateComputerAction(
+        { kind: 'click', controlId: 'c5' },
+        { processName: 'chrome', approvedStake: true, control: { id: 'c5', name: 'Buy now', role: 'Button' } },
+      ).gate,
+    ).toBe('approve')
+  })
+
   it('hands passwords and card numbers back to the owner', () => {
     expect(
       gateComputerAction(

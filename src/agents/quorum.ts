@@ -16,6 +16,7 @@ export type QuorumTurn = {
   screen?: QuorumScreen
   generate?: string
   document?: QuorumDocument
+  slip?: import('../domain/sports').SportsSlip
 }
 
 export function needsResearch(prompt: string): boolean {
@@ -30,10 +31,30 @@ export function grantsDesktop(prompt: string): boolean {
   return BARE_GRANT.test(prompt.replace(/\s+/g, ' ').trim())
 }
 
+const NAMED_PROGRAM =
+  /\b(chatgpt|chat gpt|claude|gemini|copilot|perplexity|spotify|zoom|slack|discord|notion|figma|photoshop|blender|telegram|excel|word|powerpoint|notepad|chrome|edge|firefox)\b/i
+
+const SKIP_PROGRAM = new Set([
+  'the', 'this', 'that', 'my', 'your', 'our', 'a', 'an', 'window', 'file', 'mail', 'email', 'quote', 'page', 'link',
+  'chat', 'company', 'desktop', 'computer', 'pc', 'app', 'program', 'application',
+])
+
+/** The owner wants Quorum to open a program on this PC and work inside it. */
+export function wantsProgram(prompt: string): boolean {
+  const text = prompt.replace(/\s+/g, ' ').trim()
+  if (/\b(on (this|my) (pc|computer)|use (my|the|this) (pc|computer)|any (program|app|application)|installed (app|program))\b/i.test(text)) {
+    return true
+  }
+  if (NAMED_PROGRAM.test(text) && /\b(open|launch|start|run|use|ask|click)\b/i.test(text)) return true
+  const named = text.match(/\b(?:open|launch|start|run)\s+([a-z][\w.-]{2,32})\b/i)
+  return Boolean(named && !SKIP_PROGRAM.has(named[1].toLowerCase()))
+}
+
 /** The owner wants Quorum to work inside an app already on this computer. */
 export function needsDesktop(prompt: string): boolean {
   if (grantsDesktop(prompt)) return false
   const text = prompt.replace(/\s+/g, ' ')
+  if (wantsProgram(text)) return true
   if (/\b(zoho|outlook|gmail|thunderbird|whatsapp|notepad|excel|this computer|my computer|the desktop|in the window|opened my)\b/i.test(text)) {
     return true
   }
@@ -47,7 +68,11 @@ export function desktopReasonFor(prompt: string): string {
 
 export function desktopAck(prompt: string): string {
   const text = prompt.replace(/\s+/g, ' ').trim()
-  return `I will follow this on the computer: ${text.length > 220 ? `${text.slice(0, 219)}…` : text} I will not send it. Say that I may use this computer, or press Allow.`
+  const shown = text.length > 220 ? `${text.slice(0, 219)}…` : text
+  if (wantsProgram(text) && !/\b(draft|compose|reply)\b/i.test(text)) {
+    return `I will open that program on your PC and do this there: ${shown} Press Allow.`
+  }
+  return `I will follow this on the computer: ${shown} I will not send it. Say that I may use this computer, or press Allow.`
 }
 
 /** The owner already said this thread may use the computer. */
@@ -168,6 +193,12 @@ function splitDesktop(reply: string): QuorumTurn {
 }
 
 export async function answerQuorum(state: AppState, prompt: string, threadId = QUORUM_THREAD): Promise<QuorumTurn> {
+  const { isSportsAsk } = await import('../domain/sports')
+  if (isSportsAsk(prompt)) {
+    const { researchSlip } = await import('./sports')
+    const read = await researchSlip(prompt)
+    return { text: read.text, screen: read.screen, slip: read.slip }
+  }
   const company = state.company
   const request = readingRequest(company?.website, prompt)
   const sitePages =
@@ -182,7 +213,7 @@ export async function answerQuorum(state: AppState, prompt: string, threadId = Q
   const fallback: QuorumTurn = needsDesktop(prompt)
     ? { text: desktopAck(prompt), desktopReason: desktopReasonFor(prompt), screen: looked.screen }
     : {
-        text: 'I can answer questions, look things up on public pages, and use this computer if you allow a desktop session.',
+        text: 'I can answer that once a chat model is linked. Link one under Chat, then ask again.',
         screen: looked.screen,
       }
   const link = readModelLink()
@@ -223,7 +254,12 @@ export async function answerQuorum(state: AppState, prompt: string, threadId = Q
       generate: turn.generate,
       screen: turn.screen ?? looked.screen,
     }
-  } catch {
-    return fallback
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.trim() : ''
+    if (needsDesktop(prompt) || !reason) return fallback
+    return {
+      text: `I can answer questions like that. The linked chat model refused this one: ${reason}`,
+      screen: looked.screen,
+    }
   }
 }

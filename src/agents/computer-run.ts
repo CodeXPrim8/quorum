@@ -1,4 +1,5 @@
 import { askModel, readModelLink } from './model'
+import { remoteCommand, usingRemoteAgent } from './agent-link'
 import { readDesktopToken } from './desktop'
 import { setScreen } from './screen'
 import { parseComputerPlan, stepsForPrompt, UNTRUSTED_SCREEN, type ComputerAction } from '../computer/policy'
@@ -18,6 +19,8 @@ import {
   type ComputerView,
 } from './computer'
 type DesktopRunResult = { text: string; result: string }
+
+let stakeRun = false
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
@@ -51,7 +54,9 @@ async function nextPlan(task: string, view: ComputerView, history: string[], com
           'Type only the words the instruction calls for, including any email address the owner gave.',
           'Keys: enter, tab, escape, arrows, backspace, delete, f5, and a single letter such as c when that is the app shortcut.',
           UNTRUSTED_SCREEN,
-          'Never click Send, pay, delete, or accept terms. Do not type passwords or card numbers.',
+          stakeRun
+            ? 'The owner already approved this exact slip. Select only those Play lines, enter that stake, and confirm the slip. Do not withdraw, do not change the stake, and do not type a password.'
+            : 'Never click Send, pay, delete, or accept terms. Do not type passwords or card numbers.',
           'The last item may be done only when that instruction is finished inside this window.',
         ].join('\n'),
       },
@@ -125,7 +130,7 @@ async function polishDraft(instruction: string, draft: MailDraft): Promise<MailD
 }
 
 async function perform(action: ComputerAction, history: string[]): Promise<'stop' | 'next'> {
-  const result = await actOnComputer(action, false)
+  const result = await actOnComputer(action, false, stakeRun)
   if ('handoff' in result && result.handoff) {
     noteComputer(result.reason)
     history.push(result.reason)
@@ -139,7 +144,7 @@ async function perform(action: ComputerAction, history: string[]): Promise<'stop
       history.push('Owner rejected the step.')
       return computerStopped() ? 'stop' : 'next'
     }
-    const second = await actOnComputer(action, true)
+    const second = await actOnComputer(action, true, stakeRun)
     if ('note' in second && second.ok) {
       noteComputer(second.note)
       history.push(second.note)
@@ -155,6 +160,7 @@ async function perform(action: ComputerAction, history: string[]): Promise<'stop
 
 /** Drive only the window the owner selected. Look again after every action. */
 export async function runWindowSession(instruction: string, prior: string[] = [], companyName = 'the company'): Promise<DesktopRunResult> {
+  stakeRun = /\bAPPROVED STAKE\b/.test(instruction)
   armComputerSession()
   const history = [...prior]
   if (!readDesktopToken()) {
@@ -181,7 +187,7 @@ export async function runWindowSession(instruction: string, prior: string[] = []
     await sleep(700)
     waits += 1
     if (waits > 90) {
-      const wanted = /zoho/i.test(instruction) ? 'Zoho Mail' : 'the app you named'
+      const wanted = stakeRun ? 'a browser' : /zoho/i.test(instruction) ? 'Zoho Mail' : 'the app you named'
       return {
         text: `I could not see ${wanted}. Leave that window open and in front, then tell me to continue. I will not send anything.`,
         result: 'Computer run ended without a matching window.',
@@ -191,11 +197,14 @@ export async function runWindowSession(instruction: string, prior: string[] = []
   const scope = computerScope()
   const sessionToken = readDesktopToken()
   if (sessionToken) {
-    void fetch('/api/desktop/using', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionToken, action: 'start' }),
-    }).catch(() => undefined)
+    if (usingRemoteAgent()) void remoteCommand('using', { action: 'start' }).catch(() => undefined)
+    else {
+      void fetch('/api/desktop/using', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionToken, action: 'start' }),
+      }).catch(() => undefined)
+    }
   }
   const planned = stepsForPrompt(instruction, scope?.processName ?? '')
   if (planned.length) noteComputer(`Plan: work inside ${scope?.title ?? 'the selected window'}.`)
@@ -337,7 +346,7 @@ export async function runWindowSession(instruction: string, prior: string[] = []
     `Window: ${title}`,
     typed.length ? `Typed:\n${typed.join('\n\n')}` : 'Nothing was typed.',
     misses >= 2 ? 'I stopped because the next step did not match a control in that window.' : '',
-    'Nothing was sent.',
+    stakeRun ? 'The approved slip was the only stake. Nothing was withdrawn.' : 'Nothing was sent.',
   ]
     .filter(Boolean)
     .join('\n\n')

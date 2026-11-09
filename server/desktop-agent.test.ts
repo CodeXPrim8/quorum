@@ -49,6 +49,7 @@ describe('desktop agent session', () => {
     expect(resolveDesktopApp('notepad')).toBe('notepad.exe')
     expect(resolveDesktopApp('note pad')).toBe('notepad.exe')
     expect(resolveDesktopApp('calc')).toBe('calc.exe')
+    expect(resolveDesktopApp('ChatGPT')).toBe('chatgpt.exe')
     expect(resolveDesktopApp('regedit')).toBeNull()
     expect(resolveDesktopApp('..\\secret')).toBeNull()
   })

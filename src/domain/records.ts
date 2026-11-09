@@ -13,6 +13,10 @@ export function recordKindFor(action: ConsequentialAction): CompanyRecord['kind'
       return 'finance'
     case 'hiring':
       return 'hr'
+    case 'trade_execute':
+      return 'trade'
+    case 'bet_place':
+      return 'bet'
     case 'desktop_control':
       return null
   }

@@ -14,6 +14,10 @@ export function actionLabel(action: ConsequentialAction): string {
       return 'Change financial records'
     case 'hiring':
       return 'Make a hiring decision'
+    case 'trade_execute':
+      return 'Place or cancel a live trade'
+    case 'bet_place':
+      return 'Place a sports slip'
     case 'desktop_control':
       return 'Control this computer'
   }
@@ -38,6 +42,10 @@ export function approvalOutcome(
       return 'You approved the request. The finance entry is filed in Quorum’s ledger. No bank or accounting SaaS was changed.'
     case 'hiring':
       return 'You approved the request. The hiring pack is filed in Quorum. No offer email left this computer.'
+    case 'trade_execute':
+      return 'You approved the trade. Quorum may place or cancel it on a platform that stays connected until you disconnect. Nothing is withdrawn.'
+    case 'bet_place':
+      return 'You approved the slip. Quorum Desktop may place that slip on the book that stays connected until you disconnect. Nothing is withdrawn. This is not a guaranteed win.'
     case 'desktop_control':
       if (!desktop?.sessionActive || !desktop.mode) {
         return 'You approved the request. No desktop session is active, so the computer was not viewed or controlled. Start a session on Integrations first.'

@@ -319,3 +319,174 @@ export function withDesigner(state: AppState): AppState {
   }
   return { ...state, roles, staff: [...state.staff, person], chat: state.chat ?? [], designs: state.designs ?? [] }
 }
+
+/** Adds the markets desk to a company saved before crypto and forex traders existed. */
+export function withMarketsTeam(state: AppState): AppState {
+  if (!state.company || state.staff.some((person) => person.id === 'staff_ada')) return state
+  const departments = state.departments.some((item) => item.key === 'markets')
+    ? state.departments
+    : [
+        ...state.departments,
+        {
+          id: 'dept_markets',
+          key: 'markets',
+          name: 'Markets',
+          summary: 'Crypto and forex desks. Live orders wait for your approval.',
+          roomId: 'finance',
+          enabled: true,
+          color: '#1c6b4a',
+        },
+      ]
+  const md = state.roles.find((role) => role.key === 'md')
+  const specs = [
+    {
+      id: 'role_markets_head',
+      key: 'markets_head',
+      title: 'Head of Markets',
+      staffId: 'staff_ada',
+      name: 'Ada Okonkwo',
+      reportsTo: md?.id ?? null,
+      managerId: state.staff.some((item) => item.id === 'staff_morgan') ? 'staff_morgan' : null,
+      permissions: ['finance.read', 'trade.propose', 'calendar.read'] as Role['defaultPermissions'],
+      purpose: 'Sets risk limits for crypto and forex. Does not place orders alone.',
+    },
+    {
+      id: 'role_crypto_trader',
+      key: 'crypto_trader',
+      title: 'Crypto Trader',
+      staffId: 'staff_kenji',
+      name: 'Kenji Mori',
+      reportsTo: 'role_markets_head',
+      managerId: 'staff_ada',
+      permissions: ['finance.read', 'trade.propose', 'trade.execute'] as Role['defaultPermissions'],
+      purpose: 'Proposes crypto trades on venues that stay connected until you disconnect.',
+    },
+    {
+      id: 'role_forex_trader',
+      key: 'forex_trader',
+      title: 'Forex Trader',
+      staffId: 'staff_nora',
+      name: 'Nora Lind',
+      reportsTo: 'role_markets_head',
+      managerId: 'staff_ada',
+      permissions: ['finance.read', 'trade.propose', 'trade.execute'] as Role['defaultPermissions'],
+      purpose: 'Proposes forex trades on brokers that stay connected until you disconnect.',
+    },
+  ]
+  let roles = state.roles
+  for (const spec of specs) {
+    if (roles.some((role) => role.key === spec.key)) continue
+    roles = [
+      ...roles,
+      {
+        id: spec.id,
+        key: spec.key,
+        title: spec.title,
+        purpose: spec.purpose,
+        responsibilities: ['Propose size and stop', 'Wait for approval before a live order'],
+        departmentId: 'dept_markets',
+        reportsToRoleId: spec.reportsTo,
+        enabled: true,
+        defaultPermissions: spec.permissions,
+      },
+    ]
+  }
+  const open = state.clock ? clockOpen(state.clock) : true
+  const taken = state.staff.map((person) => ({ x: person.deskX, y: person.deskY }))
+  const people: Staff[] = []
+  specs.forEach((spec, index) => {
+    if (state.staff.some((person) => person.id === spec.staffId)) return
+    const role = roles.find((item) => item.key === spec.key)
+    if (!role) return
+    const desk = nextDesk('finance', [...taken, ...people.map((person) => ({ x: person.deskX, y: person.deskY }))])
+    const look = looks[(18 + index) % looks.length]
+    people.push({
+      id: spec.staffId,
+      name: spec.name,
+      title: role.title,
+      roleId: role.id,
+      departmentId: 'dept_markets',
+      managerId: spec.managerId,
+      purpose: role.purpose,
+      responsibilities: [...role.responsibilities],
+      grants: grantsFrom(role.defaultPermissions),
+      appearance: look,
+      deskX: desk.x,
+      deskY: desk.y,
+      roomId: desk.roomId,
+      presence: open ? settledPresence(desk.x, desk.y) : awayPresence(),
+      life: { ...defaultLife(state.staff.length + index), salary: 2100, balance: 3200, commute: 4 },
+      enabled: true,
+    })
+  })
+  return { ...state, departments, roles, staff: [...state.staff, ...people] }
+}
+
+/** Adds the sports analyst when a company was saved before that role existed. */
+export function withSportsAnalyst(state: AppState): AppState {
+  if (!state.company) return state
+  const existingRole = state.roles.find((role) => role.key === 'sports_analyst')
+  if (existingRole && state.staff.some((person) => person.roleId === existingRole.id)) return state
+  if (state.staff.some((person) => person.id === 'staff_sable')) return state
+  const departments = state.departments.some((item) => item.key === 'markets')
+    ? state.departments
+    : [
+        ...state.departments,
+        {
+          id: 'dept_markets',
+          key: 'markets',
+          name: 'Markets',
+          summary: 'Crypto, forex, and sports. Live orders and slips wait for your approval.',
+          roomId: 'finance',
+          enabled: true,
+          color: '#1c6b4a',
+        },
+      ]
+  const head = state.roles.find((role) => role.key === 'markets_head')
+  const md = state.roles.find((role) => role.key === 'md')
+  const roles = existingRole
+    ? state.roles
+    : [
+        ...state.roles,
+        {
+          id: 'role_sports_analyst',
+          key: 'sports_analyst',
+          title: 'Sports Analyst',
+          purpose:
+            'Coach’s coach for every sport. Publishes only a near-sure slip. Does not call a bet a guaranteed win.',
+          responsibilities: [
+            'Read game plan, personnel, matchups, and conditions',
+            'Name only sport-native plays that clear the near-sure bar',
+            'Hold the slip until the owner approves the stake',
+          ],
+          departmentId: 'dept_markets',
+          reportsToRoleId: head?.id ?? md?.id ?? null,
+          enabled: true,
+          defaultPermissions: ['finance.read', 'bet.propose', 'bet.place', 'calendar.read'] as Role['defaultPermissions'],
+        },
+      ]
+  const role = roles.find((item) => item.key === 'sports_analyst')
+  if (!role) return { ...state, departments, roles }
+  const open = state.clock ? clockOpen(state.clock) : true
+  const taken = state.staff.map((person) => ({ x: person.deskX, y: person.deskY }))
+  const desk = nextDesk('finance', taken)
+  const person: Staff = {
+    id: 'staff_sable',
+    name: 'Sable Hart',
+    title: role.title,
+    roleId: role.id,
+    departmentId: 'dept_markets',
+    managerId: state.staff.some((item) => item.id === 'staff_ada') ? 'staff_ada' : null,
+    purpose: role.purpose,
+    responsibilities: [...role.responsibilities],
+    grants: grantsFrom(role.defaultPermissions),
+    appearance: looks[5 % looks.length],
+    deskX: desk.x,
+    deskY: desk.y,
+    roomId: desk.roomId,
+    presence: open ? settledPresence(desk.x, desk.y) : awayPresence(),
+    life: { ...defaultLife(state.staff.length), salary: 2200, balance: 3400, commute: 2 },
+    enabled: true,
+  }
+  return { ...state, departments, roles, staff: [...state.staff, person] }
+}

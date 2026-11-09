@@ -29,5 +29,13 @@ describe('desktop actions', () => {
     const zoho = seedDesktopActions('Open the Zoho website in Chrome so you can log in')
     expect(zoho).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'open', url: 'https://www.zoho.com' })]))
     expect(zoho.some((item) => item.kind === 'launch')).toBe(false)
+    const chat = seedDesktopActions('Open ChatGPT and ask who is playing today')
+    expect(chat).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'launch', app: 'ChatGPT' }),
+        expect.objectContaining({ kind: 'type', text: 'who is playing today' }),
+        expect.objectContaining({ kind: 'key', key: 'enter' }),
+      ]),
+    )
   })
 })

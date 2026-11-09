@@ -42,6 +42,8 @@ import {
   whatsAppEnv,
 } from './server/whatsapp'
 import { canHostMedia, instagramReady, publishInstagramFeed, readPublishImage } from './server/instagram'
+import { agentPlugin } from './server/agent-plugin'
+import { venuesPlugin } from './server/venues-plugin'
 import { clearCompanyChannel } from './server/meta-store'
 import {
   companyInstagramLine,
@@ -406,13 +408,18 @@ function modelProxy(env: Record<string, string>): Plugin {
       }
       void readBody(req, 8_000)
         .then(async (raw) => {
-          const body = JSON.parse(raw || '{}') as { sessionToken?: string; approved?: boolean; action?: unknown }
+          const body = JSON.parse(raw || '{}') as {
+            sessionToken?: string
+            approved?: boolean
+            approvedStake?: boolean
+            action?: unknown
+          }
           const action = parseComputerAction(JSON.stringify(body.action ?? {}))
           if (!action) {
             json(res, 400, { error: 'That computer action is not in the allowed set.' })
             return
           }
-          json(res, 200, await actOnComputer(body.sessionToken, action, Boolean(body.approved)))
+          json(res, 200, await actOnComputer(body.sessionToken, action, Boolean(body.approved), Boolean(body.approvedStake)))
         })
         .catch((error: unknown) => {
           const status = error instanceof DesktopAuthError || error instanceof DesktopBusyError ? error.status : 400
@@ -491,12 +498,12 @@ function modelProxy(env: Record<string, string>): Plugin {
 
     const xaiKey = String(env.XAI_API_KEY ?? process.env.XAI_API_KEY ?? '').trim()
     const xaiModel = String(env.XAI_MODEL ?? process.env.XAI_MODEL ?? 'grok-4').trim() || 'grok-4'
+    const deepseekKey = String(env.DEEPSEEK_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? '').trim()
+    const deepseekModel = String(env.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL ?? 'deepseek-chat').trim() || 'deepseek-chat'
     if (path === '/api/model/link' && req.method === 'GET') {
-      json(res, 200, {
-        linked: Boolean(xaiKey),
-        baseUrl: 'https://api.x.ai/v1',
-        model: xaiModel,
-      })
+      json(res, 200, deepseekKey
+        ? { linked: true, baseUrl: 'https://api.deepseek.com/v1', model: deepseekModel }
+        : { linked: Boolean(xaiKey), baseUrl: 'https://api.x.ai/v1', model: xaiModel })
       return
     }
     if (path !== '/api/model') {
@@ -516,15 +523,23 @@ function modelProxy(env: Record<string, string>): Plugin {
           json(res, 400, { error: 'The model address must start with http:// or https://.' })
           return
         }
+        const deepseekHost = base === 'https://api.deepseek.com' || base === 'https://api.deepseek.com/v1'
+        const useDeepseek = deepseekHost && (!body.apiKey || body.apiKey === 'server') && Boolean(deepseekKey)
         const useServerKey = base === 'https://api.x.ai/v1' && (!body.apiKey || body.apiKey === 'server') && Boolean(xaiKey)
         const response = await fetch(`${base}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${useServerKey ? xaiKey : (body.apiKey ?? '')}`,
+            Authorization: `Bearer ${useDeepseek ? deepseekKey : useServerKey ? xaiKey : (body.apiKey ?? '')}`,
           },
           body: JSON.stringify({
-            model: body.model && body.model !== 'server' ? body.model : useServerKey ? xaiModel : body.model,
+            model: body.model && body.model !== 'server'
+              ? body.model
+              : useDeepseek
+                ? deepseekModel
+                : useServerKey
+                  ? xaiModel
+                  : body.model,
             messages: body.messages,
             temperature: 0.7,
           }),
@@ -855,7 +870,7 @@ function metaProxy(env: Record<string, string>): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
-    plugins: [react(), modelProxy(env), whatsAppProxy(env), instagramProxy(env), metaProxy(env)],
+    plugins: [react(), modelProxy(env), whatsAppProxy(env), instagramProxy(env), metaProxy(env), agentPlugin(), venuesPlugin()],
     optimizeDeps: {
       exclude: ['@xenova/transformers'],
     },

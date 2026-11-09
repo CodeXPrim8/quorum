@@ -88,6 +88,9 @@ export async function answerAs(input: {
           'If asked to send email, publish, pay, or control the computer, say that stays inside Quorum until you approve it, and offer to draft the work in this chat.',
           'Do the real work of your role here: drafts, comparisons, captions, checklists, and notes the owner can review.',
           'Security work stays on this company’s own systems inside the app. Refuse hacking, exploits, and attacks.',
+          roleKey === 'sports_analyst'
+            ? 'You are the coach’s coach for every sport. Reply with only near-sure, sport-native plays. If the pattern is weak, say there is no stake. Never say guaranteed win.'
+            : '',
           designer
             ? 'If a graphic is wanted, end with a new line exactly like DESIGN: short title. Meetings, agendas, and other in-house notices are internal flyers (DM for approval, then company group, never social). Product and service promos are for social after approval.'
             : 'Do not include a DESIGN line.',

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createSampleState } from '../engine/fixture'
 import { applyCommand } from '../engine/apply'
-import { earlierDesktopPrompt, grantsDesktop, needsDesktop, pendingQuorumPrompt, needsResearch } from './quorum'
+import { earlierDesktopPrompt, grantsDesktop, needsDesktop, pendingQuorumPrompt, needsResearch, wantsProgram } from './quorum'
 
 const now = 1_700_000_000_000
 
@@ -48,5 +48,12 @@ describe('Quorum assistant', () => {
     expect(grantsDesktop(ask)).toBe(false)
     let state = applyCommand(createSampleState(now), { type: 'SEND_MESSAGE', threadId: 'thread_quorum', text: ask, wake: false }, now)
     expect(earlierDesktopPrompt(state, 'thread_quorum', 'i allow a desktop session.')).toBe(ask)
+  })
+
+  it('treats opening ChatGPT on this PC as computer work', () => {
+    expect(wantsProgram('Open ChatGPT and ask who is playing today')).toBe(true)
+    expect(needsDesktop('Open ChatGPT and ask who is playing today')).toBe(true)
+    expect(wantsProgram('Use my PC to open Spotify')).toBe(true)
+    expect(wantsProgram('What should I say in a client intro?')).toBe(false)
   })
 })

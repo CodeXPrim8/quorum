@@ -30,7 +30,11 @@ export function matchOpenWindow(instruction: string, windows: OpenWindow[]): Ope
     if (mailJob && /\b(zoho mail|outlook|yahoo mail)\b/i.test(bare)) score += 30
     if (score > (best?.score ?? 0)) best = { item, score }
   }
-  return best && best.score >= 4 ? best.item : null
+  if (best && best.score >= 4) return best.item
+  if (/\bAPPROVED STAKE\b/.test(instruction)) {
+    return windows.find((item) => /^(chrome|msedge|firefox|brave|opera)$/i.test(item.processName)) ?? null
+  }
+  return null
 }
 
 export function isMailTask(prompt: string): boolean {

@@ -1,5 +1,7 @@
 import type { AppState, Command, DesktopAccess, Staff, Task } from '../types'
-import { askModel, readModelLink } from './model'
+import { remoteCommand, usingRemoteAgent } from './agent-link'
+import { askModel, readModelLink, type ModelContentPart } from './model'
+import { wantsProgram } from './quorum'
 import { setScreen } from './screen'
 
 const TOKEN_KEY = 'quorum.desktop.token.v1'
@@ -32,6 +34,11 @@ export async function probeDesktopAgent(): Promise<boolean> {
 }
 
 export async function startDesktopServerSession(): Promise<string> {
+  if (usingRemoteAgent()) {
+    await remoteCommand('session_start')
+    writeDesktopToken('remote')
+    return 'remote'
+  }
   const response = await fetch('/api/desktop/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -44,8 +51,17 @@ export async function startDesktopServerSession(): Promise<string> {
 }
 
 export async function endDesktopServerSession(): Promise<void> {
+  const remote = usingRemoteAgent()
   writeDesktopToken(null)
   setScreen({ kind: 'idle' })
+  if (remote) {
+    try {
+      await remoteCommand('session_end')
+    } catch {
+      // The agent may already be offline.
+    }
+    return
+  }
   try {
     await fetch('/api/desktop/session', {
       method: 'POST',
@@ -71,9 +87,13 @@ export async function allowQuorumDesktop(
   dispatch({ type: 'DECIDE_QUORUM_DESKTOP', decision: 'granted' })
 }
 
-type Shot = { image: string; width: number; height: number; screenWidth: number; screenHeight: number }
+type Shot = { image: string; width: number; height: number; screenWidth: number; screenHeight: number; framed?: boolean }
 
 async function screenshot(token: string): Promise<Shot> {
+  if (usingRemoteAgent()) {
+    const data = await remoteCommand<Shot>('screenshot')
+    return { ...data, framed: data.framed === true }
+  }
   const response = await fetch('/api/desktop/screenshot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -87,6 +107,7 @@ async function screenshot(token: string): Promise<Shot> {
     height: data.height,
     screenWidth: data.screenWidth || data.width,
     screenHeight: data.screenHeight || data.height,
+    framed: data.framed === true,
   }
 }
 
@@ -103,6 +124,14 @@ export async function peekDesktop(): Promise<Shot | null> {
 async function markUsing(on: boolean): Promise<void> {
   const token = readDesktopToken()
   if (!token) return
+  if (usingRemoteAgent()) {
+    try {
+      await remoteCommand('using', { action: on ? 'start' : 'end' })
+    } catch {
+      // The in-app mouse still shows if the Windows overlay cannot start.
+    }
+    return
+  }
   try {
     await fetch('/api/desktop/using', {
       method: 'POST',
@@ -125,7 +154,7 @@ function showDesk(
 ): void {
   setScreen({
     kind: 'desktop',
-    image: shot.image,
+    image: shot.framed ? shot.image : '',
     width: shot.width,
     height: shot.height,
     cursor: restCursor(shot, extra?.cursor),
@@ -146,6 +175,10 @@ function showDeskStart(note = 'Starting on this computer'): void {
 }
 
 async function sendInput(token: string, body: Record<string, unknown>): Promise<void> {
+  if (usingRemoteAgent()) {
+    await remoteCommand('input', body)
+    return
+  }
   const response = await fetch('/api/desktop/input', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -174,7 +207,7 @@ export function parseDesktopAction(raw: string): ModelAction | null {
   try {
     const parsed = JSON.parse(match[0]) as Record<string, unknown>
     const kind = String(parsed.kind ?? '').toLowerCase()
-    const note = typeof parsed.note === 'string' ? parsed.note.slice(0, 180) : undefined
+    const note = typeof parsed.note === 'string' ? parsed.note.slice(0, kind === 'done' ? 700 : 180) : undefined
     if (kind === 'done') return { kind: 'done', note }
     if (kind === 'ask') return { kind: 'ask', note: (note || 'Need your OK to continue.').slice(0, 180) }
     if (kind === 'wait') {
@@ -227,6 +260,11 @@ const KNOWN_APPS: Array<{ test: RegExp; app: string; label: string }> = [
   { test: /\bwordpad\b/i, app: 'wordpad', label: 'WordPad' },
   { test: /\bterminal\b/i, app: 'terminal', label: 'Terminal' },
   { test: /\bsnipping\b/i, app: 'snippingtool', label: 'Snipping Tool' },
+  { test: /\bchat\s*gpt\b/i, app: 'ChatGPT', label: 'ChatGPT' },
+  { test: /\bclaude\b/i, app: 'Claude', label: 'Claude' },
+  { test: /\bgemini\b/i, app: 'Gemini', label: 'Gemini' },
+  { test: /\bcopilot\b/i, app: 'Copilot', label: 'Copilot' },
+  { test: /\bperplexity\b/i, app: 'Perplexity', label: 'Perplexity' },
 ]
 
 function quotedText(prompt: string): string | undefined {
@@ -253,7 +291,7 @@ export function seedDesktopActions(prompt: string, already: string[] = []): Mode
   if (urlMatch) {
     const url = urlMatch[0].replace(/[.,;:!?)]+$/, '')
     push({ kind: 'open', url, note: `Open ${url}` })
-    push({ kind: 'wait', ms: 1100, note: 'Wait for the page' })
+    push({ kind: 'wait', ms: 400, note: 'Wait for the page' })
     openedPage = true
   }
   const namedSite = text.match(/\b(?:the\s+)?([a-z0-9-]{2,32})\s+website\b/i)
@@ -261,7 +299,7 @@ export function seedDesktopActions(prompt: string, already: string[] = []): Mode
   if (!openedPage && host && !/\b(the|this|that|my|our|a|an|web|official)\b/i.test(host)) {
     const url = `https://www.${host}.com`
     push({ kind: 'open', url, note: `Open ${host}` })
-    push({ kind: 'wait', ms: 1100, note: 'Wait for the page' })
+    push({ kind: 'wait', ms: 400, note: 'Wait for the page' })
     openedPage = true
   }
 
@@ -269,22 +307,28 @@ export function seedDesktopActions(prompt: string, already: string[] = []): Mode
   const browser = known && /^(chrome|edge|firefox)$/.test(known.app)
   if (known && !(openedPage && browser)) {
     push({ kind: 'launch', app: known.app, note: `Open ${known.label}` })
-    push({ kind: 'wait', ms: 900, note: `Wait for ${known.label}` })
+    push({ kind: 'wait', ms: 250, note: `Wait for ${known.label}` })
   } else if (!known && !openedPage) {
     const openWhat = text.match(/\b(?:open|launch|start|run)\s+([a-z][\w .-]{1,40}?)(?:\s+and\s+|\s+then\s+|[,.]|$)/i)
     const name = openWhat?.[1]?.trim().replace(/\s+/g, ' ')
     if (name && !/\b(the|my|this|your|an?|app|application|program|computer|pc|desktop|file|window)\b/i.test(name)) {
       push({ kind: 'key', key: 'win+r', note: 'Open Run' })
-      push({ kind: 'wait', ms: 400, note: 'Wait for Run' })
+      push({ kind: 'wait', ms: 180, note: 'Wait for Run' })
       push({ kind: 'type', text: name, note: `Run ${name}` })
       push({ kind: 'key', key: 'enter', note: `Start ${name}` })
-      push({ kind: 'wait', ms: 800, note: 'Wait for the window' })
+      push({ kind: 'wait', ms: 280, note: 'Wait for the window' })
     }
   }
 
   const typed = quotedText(text) || text.match(/\btype\s+(.+)$/i)?.[1]?.trim()
-  if (typed) {
-    push({ kind: 'type', text: typed.slice(0, 500), note: `Type “${typed.slice(0, 40)}”` })
+  const asked = text.match(/\b(?:ask|research|look up|find out)\b(?:\s+(?:it|them|chatgpt|claude|gemini|copilot))?\s+(.{3,400})$/i)?.[1]?.trim()
+  const message = (typed || asked || '').replace(/^["“]|["”]$/g, '').trim()
+  if (message) {
+    push({ kind: 'type', text: message.slice(0, 500), note: `Type “${message.slice(0, 40)}”` })
+    if (asked && !/\b(draft|compose|reply)\b/i.test(text)) {
+      push({ kind: 'key', key: 'enter', note: 'Submit that in the open program' })
+      push({ kind: 'wait', ms: 500, note: 'Wait for the answer' })
+    }
   }
 
   return actions
@@ -334,12 +378,13 @@ async function nextAction(
         'Reply with ONE JSON object only, no markdown.',
         'Kinds: click {x,y,clicks?,button?} | type {text} | key {key} | scroll {dy} | launch {app} | open {url} | wait {ms} | ask {note} | done {note}',
         `Last screenshot size: ${shot.width}x${shot.height}. Full display is ${shot.screenWidth}x${shot.screenHeight}.`,
-        'You do not receive the screenshot. Use launch, Win+R, type, and key from the request. Click only if you already have coordinates.',
-        'Open apps with launch (notepad, calc, explorer, chrome, edge, paint). If launch fails, use key win+r, type the app, key enter.',
-        'Open a public website with open and the https URL. Type into the focused window. Wait after opening something.',
-        'Never return done because a window is missing. Launch, Win+R, or wait, then continue.',
-        'Return done only when the owner’s request is actually finished.',
-        'Return ask when you need extra permission: delete, install, send, passwords, money, or anything irreversible.',
+        'The screenshot is only the program window, not the whole desktop. Click coordinates are pixels of that window. The program stays off the owner’s screen; they watch it inside Quorum.',
+        'Open any installed program with launch, including ChatGPT, Claude, a browser, or another app the owner named. If launch misses, use key win, type the app name, then key enter.',
+        'When the owner asked you to use that program, click its input, type the question, and press enter. On the next screenshot, read the answer and return done. The done note is the answer itself, written as a normal reply.',
+        'Open a public website with open and the https URL. Wait after opening something.',
+        'Never return done because a window is missing. Launch or wait, then continue.',
+        'Return done only when the owner’s request is actually finished and, if an app answered, the note contains what was on screen.',
+        'Return ask before passwords, payments, deleting files, installing software, or sending email.',
       ].join('\n')
     : [
         `You are ${actor} at ${companyName}, controlling the owner's Windows desktop for one request.`,
@@ -352,20 +397,46 @@ async function nextAction(
     `Task: ${title}`,
     `Description: ${detail}`,
     history.length ? `Already done:\n${history.join('\n')}` : 'No steps yet.',
-    'Plan the next single step from the request. Do not wait for a screenshot.',
+    'The screenshot is what Quorum is showing. If the answer is already on screen, return done and put that answer in note. Otherwise take the next single step.',
   ].join('\n')
 
-  try {
-    const raw = await withTimeout(
+  const image =
+    shot.framed && shot.image.startsWith('data:image/jpeg') && shot.image.length < 500_000 ? shot.image : ''
+  const content: ModelContentPart[] = image
+    ? [
+        { type: 'text', text: userText },
+        { type: 'image_url', image_url: { url: image } },
+      ]
+    : [{ type: 'text', text: userText }]
+  const ask = (parts: ModelContentPart[] | string) =>
+    withTimeout(
       askModel(link, [
         { role: 'system', content: system },
-        { role: 'user', content: userText },
+        { role: 'user', content: parts },
       ]),
-      18_000,
+      12_000,
     )
-    return parseDesktopAction(raw) ?? { kind: 'wait', ms: 600, note: 'Could not parse a desktop action. Trying again.' }
+  try {
+    const raw = await ask(image ? content : userText)
+    return parseDesktopAction(raw) ?? stoppedAction(history)
   } catch {
-    return { kind: 'wait', ms: 900, note: 'The linked model missed a step. Trying again.' }
+    if (!image) return stoppedAction(history)
+    try {
+      const raw = await ask(userText)
+      return parseDesktopAction(raw) ?? stoppedAction(history)
+    } catch {
+      return stoppedAction(history)
+    }
+  }
+}
+
+function stoppedAction(history: string[]): ModelAction {
+  const did = history.some((line) => /^(Open|Opened|Typed|Submit|Start|Run)/i.test(line))
+  return {
+    kind: 'done',
+    note: did
+      ? 'I completed the steps on the program. The model did not return another step, so this is the result of the work already done.'
+      : 'The linked model did not return a step, so I stopped before using the PC.',
   }
 }
 
@@ -437,7 +508,7 @@ async function applyStep(
   if (action.kind === 'click') {
     const next = { x: action.x, y: action.y }
     await movePointer(token, shot, next, false, action.note)
-    await sleep(160)
+    await sleep(40)
     const point = toScreen(shot, next)
     showDesk(shot, { cursor: next, click: true, note: action.note })
     await sendInput(token, { kind: 'click', x: point.x, y: point.y, button: action.button, clicks: action.clicks })
@@ -458,13 +529,26 @@ async function applyStep(
   if (action.kind === 'launch') {
     await movePointer(token, shot, restCursor(shot), false, action.note)
     await sendInput(token, { kind: 'launch', app: action.app })
-    await sleep(900)
+    await sleep(120)
     return { token, shot, cursor: restCursor(shot), note: action.note || `Opened ${action.app}` }
   }
   await movePointer(token, shot, restCursor(shot), false, action.note)
   await sendInput(token, { kind: 'open', url: action.url })
-  await sleep(1100)
+  await sleep(200)
   return { token, shot, cursor: restCursor(shot), note: action.note || `Opened ${action.url}` }
+}
+
+function finalReport(title: string, history: string[]): string {
+  const skip = /^(Looking at the PC|Waited|Wait for|Key |Clicked |That step missed|Could not read|The session ended|The linked model)/i
+  const answer = [...history].reverse().find((line) => line.trim() && !skip.test(line.trim()))
+  const did = history.filter((line) => /^(Open|Opened|Typed|Submit|Start|Run)/i.test(line)).slice(0, 6)
+  return [
+    `Done. ${title}.`,
+    did.length ? `What I did: ${did.join('; ')}.` : '',
+    `Result: ${answer || 'I finished the steps on your PC.'}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 let desktopFlight: Promise<DesktopRunResult> | null = null
@@ -503,10 +587,7 @@ async function runDesktopLoop(
       token = grabbed.token
       shot = grabbed.shot
       cursor = restCursor(shot, cursor)
-      await movePointer(token, shot, { x: shot.width * 0.22, y: shot.height * 0.2 }, false, 'Pointer is on this computer')
-      await sleep(140)
-      await movePointer(token, shot, cursor, false, 'Pointer is on this computer')
-      history.push('Pointer is on this computer.')
+      showDesk(shot, { cursor, note: 'Looking at the PC.' })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Screenshot failed.'
       if (/not active|token is wrong/i.test(message)) {
@@ -562,7 +643,7 @@ async function runDesktopLoop(
           break
         }
         history.push(`Could not read the screen: ${message}`)
-        await sleep(800)
+        await sleep(250)
         continue
       }
       const action = await nextAction(
@@ -588,6 +669,14 @@ async function runDesktopLoop(
       }
       if (action.kind === 'done') {
         history.push(action.note || 'Done.')
+        try {
+          const grabbed = await takeShot(token)
+          token = grabbed.token
+          shot = grabbed.shot
+          showDesk(shot, { cursor, note: action.note || 'Done.' })
+        } catch {
+          showDesk(shot, { cursor, note: action.note || 'Done.' })
+        }
         break
       }
       try {
@@ -602,7 +691,7 @@ async function runDesktopLoop(
         const message = error instanceof Error ? error.message : 'Desktop input failed.'
         history.push(`That step missed (${message}). Trying another way.`)
         if (misses >= 6 && !options.full) break
-        await sleep(500)
+        await sleep(180)
       }
       if (options.full && step === cap - 1) {
         return {
@@ -613,11 +702,7 @@ async function runDesktopLoop(
       }
     }
     const mode = state.desktop.mode === 'live' ? 'Live' : 'Approved'
-    const text = [
-      options.full ? `I finished the work on this computer for “${title}”.` : `I used the ${mode} desktop session for “${title}”.`,
-      history.length ? history.map((line, index) => `${index + 1}. ${line}`).join('\n') : 'No steps were taken.',
-      'You can end the session anytime.',
-    ].join('\n')
+    const text = finalReport(title, history)
     return {
       text: text.slice(0, 4000),
       result: `${mode} desktop run for ${title} (${history.length} step${history.length === 1 ? '' : 's'}).`,
@@ -637,6 +722,10 @@ export async function runQuorumDesktop(
   instruction: string,
   prior: string[] = [],
 ): Promise<DesktopRunResult> {
+  const task = instruction || 'Help on this computer.'
+  if (wantsProgram(task)) {
+    return runDesktopLoop(_state, 'Quorum', task.slice(0, 120), task, { full: true, prior })
+  }
   const { runWindowSession } = await import('./computer-run')
-  return runWindowSession(instruction || 'Help inside the selected window.', prior, _state.company?.name || 'the company')
+  return runWindowSession(task, prior, _state.company?.name || 'the company')
 }

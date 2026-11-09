@@ -101,6 +101,11 @@ describe('open windows', () => {
     expect(points?.body.y).toBeGreaterThan(points?.subject.y ?? 0)
   })
 
+  it('uses an open browser for an approved stake', () => {
+    const browser = { hwnd: '4', processName: 'chrome', title: 'New Tab' }
+    expect(matchOpenWindow('APPROVED STAKE. Open https://www.nairabet.com/. Play Chelsea.', [browser])?.hwnd).toBe('4')
+  })
+
   it('leaves the choice alone when the instruction names no open window', () => {
     expect(
       matchOpenWindow('draft the request in the Zoho window', [{ hwnd: '10', processName: 'notepad', title: 'Notes' }]),

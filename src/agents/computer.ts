@@ -1,4 +1,5 @@
 import type { ComputerAction, ControlInfo } from '../computer/policy'
+import { remoteCommand, usingRemoteAgent } from './agent-link'
 import { readDesktopToken } from './desktop'
 
 export type ComputerWindow = { hwnd: string; processName: string; title: string }
@@ -106,6 +107,10 @@ function token(): string {
 }
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  if (usingRemoteAgent()) {
+    const op = path.split('/').filter(Boolean).at(-1) || ''
+    return remoteCommand<T>(op, body)
+  }
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -152,14 +157,15 @@ export async function writeComputerDraft(draft: { to: string; subject: string; b
   await post('/api/computer/compose', { sessionToken: token(), ...draft })
 }
 
-export async function actOnComputer(action: ComputerAction, approved = false): Promise<ActResult> {
-  return post<ActResult>('/api/computer/act', { sessionToken: token(), action, approved })
+export async function actOnComputer(action: ComputerAction, approved = false, approvedStake = false): Promise<ActResult> {
+  return post<ActResult>('/api/computer/act', { sessionToken: token(), action, approved, approvedStake })
 }
 
 export async function stopComputerBridge(): Promise<void> {
   clearComputerSession()
   try {
-    await fetch('/api/computer/stop', { method: 'POST' })
+    if (usingRemoteAgent()) await remoteCommand('stop')
+    else await fetch('/api/computer/stop', { method: 'POST' })
   } catch {
     // Local state is already cleared.
   }

@@ -5,7 +5,7 @@ import { applyCommand } from '../engine/apply'
 import { defaultLife, freshClock } from '../engine/life'
 import { ensureChat } from '../chat/threads'
 import { isOfficeLife } from '../domain/reports'
-import { blankState, withDesigner, withSecurityTeam } from '../domain/sample'
+import { blankState, withDesigner, withMarketsTeam, withSecurityTeam, withSportsAnalyst } from '../domain/sample'
 import { settledPresence } from '../office/presence'
 import { nextDesk } from '../office/world'
 import type { AppState, Command, Staff } from '../types'
@@ -58,6 +58,8 @@ function hydrate(parsed: AppState, now: number): AppState {
   const reports = (parsed.reports ?? []).filter((item) => item.text.trim() && !isOfficeLife(item.text))
   const chat = (parsed.chat ?? []).filter((message) => !isOfficeLife(message.text))
   return ensureChat(
+    withSportsAnalyst(
+    withMarketsTeam(
     withDesigner(
     withSecurityTeam({
       ...parsed,
@@ -83,6 +85,8 @@ function hydrate(parsed: AppState, now: number): AppState {
           }
         : freshClock(now, 9 * 60 + 10),
     }),
+    ),
+    ),
   ),
   )
 }

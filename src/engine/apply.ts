@@ -174,6 +174,10 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return reviewTask(state, command.taskId, command.decision, command.note, now)
     case 'DECIDE_APPROVAL':
       return decideApproval(state, command.approvalId, command.decision, command.note, now)
+    case 'FILE_SPORTS_SLIP':
+      return fileSportsSlip(state, command.title, command.detail, now)
+    case 'FINISH_STAKE':
+      return finishStake(state, command.taskId, command.result, now)
     case 'REQUEST_APPROVAL':
       return requestApproval(state, command.taskId, now)
     case 'CALL_MEETING':
@@ -1039,6 +1043,21 @@ function decideApproval(
         )
         next = filed.state
       }
+      if (approval.action === 'bet_place') {
+        const book = task.description.match(/https?:\/\/\S+/)?.[0]
+        if (book) {
+          next = {
+            ...next,
+            pendingStake: {
+              taskId: task.id,
+              instruction: `APPROVED STAKE. Open ${book}. Place only the plays named below. Do not withdraw and do not change the stake.\n${task.description}`.slice(
+                0,
+                4000,
+              ),
+            },
+          }
+        }
+      }
       next = patchTask(next, task.id, now, {
         status: 'in_review',
         result: noted,
@@ -1067,6 +1086,61 @@ function decideApproval(
     staffId: person?.id,
     audit: true,
     message: noted,
+  })
+}
+
+function fileSportsSlip(state: AppState, title: string, detail: string, now: number): AppState {
+  const person =
+    state.staff.find((item) => item.id === 'staff_sable') ??
+    state.staff.find((item) => state.roles.some((role) => role.id === item.roleId && role.key === 'sports_analyst'))
+  const heading = title.trim().slice(0, 120)
+  const body = detail.trim().slice(0, 4000)
+  if (!state.company || !person || !isStaffActive(state, person) || !heading || !body) return state
+  if (state.approvals.some((approval) => approval.status === 'pending' && approval.action === 'bet_place' && approval.summary === heading)) {
+    return state
+  }
+  const id = uid('task')
+  const task: Task = {
+    id,
+    title: heading,
+    description: body,
+    status: 'ready',
+    priority: 'high',
+    assigneeId: person.id,
+    departmentId: person.departmentId,
+    source: 'staff',
+    playbook: [],
+    stepIndex: 0,
+    stepStartedAt: null,
+    handoff: null,
+    blockers: [],
+    result: null,
+    consequential: { action: 'bet_place', summary: heading },
+    createdAt: iso(now),
+    updatedAt: iso(now),
+  }
+  const withTask = withEvent({ ...state, tasks: [task, ...state.tasks] }, now, {
+    actorId: person.id,
+    actorName: person.name,
+    kind: 'task',
+    taskId: id,
+    staffId: person.id,
+    audit: true,
+    message: `${person.name} filed a sports slip for “${heading}”.`,
+  })
+  return openApproval(withTask, task, 'bet_place', heading, body, now)
+}
+
+function finishStake(state: AppState, taskId: string, result: string, now: number): AppState {
+  const note = result.trim().slice(0, 2000) || 'Quorum Desktop finished the approved slip.'
+  const next = patchTask({ ...state, pendingStake: null }, taskId, now, { status: 'done', result: note })
+  return withEvent(next, now, {
+    actorId: 'quorum',
+    actorName: 'Quorum',
+    kind: 'result',
+    taskId,
+    audit: true,
+    message: note,
   })
 }
 
@@ -3221,6 +3295,10 @@ function requestKeys(action: ConsequentialAction): PermissionId[] {
       return ['finance.write']
     case 'hiring':
       return ['hr.hire']
+    case 'trade_execute':
+      return ['trade.execute']
+    case 'bet_place':
+      return ['bet.place']
     case 'desktop_control':
       return ['desktop.control']
   }

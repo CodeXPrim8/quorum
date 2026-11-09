@@ -61,9 +61,18 @@ Quorum uses one Meta app. Each company connects its own Instagram Business accou
 
 TikTok and LinkedIn are still held until those lines are added.
 
+## Trading platforms
+
+Integrations lists Binance, Bybit, OKX, OANDA, and FXCM. **Connect** opens that platform’s login. Quorum keeps the link until **Disconnect**. Crypto and forex traders can propose orders; a live place or cancel still waits for your approval. Quorum does not withdraw funds. No trading system is mistake-free.
+
 ## Computer use
 
-Quorum is a web app, so the page itself cannot drive Windows. `npm run dev` keeps a local bridge on `localhost` only. It is not exposed on the network. Windows 10 and 11 are supported. There is no cloud desktop and no arbitrary shell.
+Quorum in the browser does not move the mouse by itself. Install **Quorum Desktop** on the Windows PC you want controlled. The website then drives that PC’s real mouse and apps after you Allow.
+
+1. Click **Download Quorum Desktop** and open the file.
+2. The website connects to that PC on its own. Allow, then Stop when you are done.
+
+`npm run dev` can still drive this same machine without the desktop app. Windows 10 and 11 only. There is no arbitrary shell. Passwords, one-time codes, and payment details stay with you.
 
 1. Ask Quorum to use the computer, then choose **Allow**, or open Integrations and start a desktop session.
 2. In the computer panel, pick the app or window Quorum may use. That window comes to the front, and the picture is only that window. Open Chrome, Edge, or another app first if it is not already in the list.

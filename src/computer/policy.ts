@@ -52,9 +52,11 @@ export function isBrowserProcess(processName: string): boolean {
   return BROWSERS.has(processName.trim().toLowerCase())
 }
 
+const STAKE_CONFIRM = /\b(place bet|confirm bet|place slip|bet now|confirm slip|place stake|submit|confirm)\b/i
+
 export function gateComputerAction(
   action: ComputerAction,
-  ctx: { processName: string; control?: ControlInfo },
+  ctx: { processName: string; control?: ControlInfo; approvedStake?: boolean },
 ): GateResult {
   if (action.kind === 'wait') return { gate: 'allow', reason: 'Wait for the window' }
   if (action.kind === 'scroll') return { gate: 'allow', reason: 'Scroll the window' }
@@ -80,6 +82,9 @@ export function gateComputerAction(
     return { gate: 'handoff', reason: 'That control needs you at the keyboard.' }
   }
   if (SENSITIVE.test(label)) {
+    if (ctx.approvedStake && STAKE_CONFIRM.test(label) && !/\b(withdraw|deposit|password|delete|transfer)\b/i.test(label)) {
+      return { gate: 'allow', reason: `Place the approved slip via “${control.name || control.role}”.` }
+    }
     return { gate: 'approve', reason: `Approve before “${control.name || control.role}”.` }
   }
   return { gate: 'allow', reason: control.name ? `Click ${control.name}` : `Click ${control.role}` }

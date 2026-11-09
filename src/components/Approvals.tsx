@@ -18,7 +18,7 @@ export function Approvals({ state, dispatch, now }: { state: AppState; dispatch:
           <h1>Approvals</h1>
           <p className="lede">
             Day-to-day work starts without you. A new company goal, and anything that publishes, sends, buys, pays, hires,
-            or uses this computer, stops here. Approving records the decision in Quorum. It does not call a live outside network.
+            places a sports slip, or uses this computer, stops here. Approving a slip lets Quorum Desktop place that slip. It is not a guaranteed win.
           </p>
         </div>
       </header>

@@ -162,6 +162,13 @@ export function Shell({
               state.desktop.sessionActive ||
               Boolean(state.desktop.grantedQuorum)) && <QuorumScreen state={state} dispatch={dispatch} />}
         </main>
+        <a className="desk-download" href="/api/agent/download" aria-label="Download Quorum Desktop" title="Download Quorum Desktop">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 4v10" />
+            <path d="M8 10l4 4 4-4" />
+            <path d="M5 19h14" />
+          </svg>
+        </a>
       </div>
     </div>
   )

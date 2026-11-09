@@ -21,6 +21,9 @@ let sessionToken: string | null = null
 let chain = Promise.resolve()
 let overlay: ChildProcess | null = null
 let halted = false
+let workHwnd = ''
+let homeHwnd = ''
+let windowShot = false
 
 function withDesktopLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = chain.then(fn, fn)
@@ -52,6 +55,9 @@ export function startDesktopSession(): { token: string } {
 export function endDesktopSession(): void {
   halted = true
   sessionToken = null
+  workHwnd = ''
+  homeHwnd = ''
+  windowShot = false
   hideUsingOverlay()
 }
 
@@ -146,48 +152,193 @@ async function runPowerShell(script: string): Promise<string> {
 
 export async function captureScreenshot(
   token: string | undefined,
-): Promise<{ image: string; width: number; height: number; screenWidth: number; screenHeight: number }> {
+): Promise<{ image: string; width: number; height: number; screenWidth: number; screenHeight: number; framed: boolean }> {
   return withDesktopLock(() => takeScreenshot(token))
+}
+
+function deskApi(): string {
+  return `
+Add-Type -AssemblyName System.Drawing
+if (-not ('QuorumDesk' -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class QuorumDesk {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr ProcessId);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+  [DllImport("user32.dll", EntryPoint="GetWindowLong")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", EntryPoint="SetWindowLong")] public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hWnd, ref POINT pt);
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public struct POINT { public int X; public int Y; }
+  public static void Park(IntPtr hwnd) {
+    if (hwnd == IntPtr.Zero) return;
+    RECT rect;
+    GetWindowRect(hwnd, out rect);
+    int w = rect.Right - rect.Left;
+    int h = rect.Bottom - rect.Top;
+    if (w < 1000) w = 1200;
+    if (h < 680) h = 760;
+    if (w > 1400) w = 1280;
+    if (h > 960) h = 800;
+    int vx = GetSystemMetrics(76);
+    int vy = GetSystemMetrics(77);
+    int ex = GetWindowLong(hwnd, -20);
+    SetWindowLong(hwnd, -20, ex | 0x00000080 | 0x08000000);
+    SetWindowPos(hwnd, new IntPtr(1), vx - w - 48, vy + 8, w, h, 0x0010 | 0x0040);
+  }
+  public static void QuietFocus(IntPtr hwnd) {
+    if (hwnd == IntPtr.Zero) return;
+    Park(hwnd);
+    IntPtr fore = GetForegroundWindow();
+    uint foreThread = GetWindowThreadProcessId(fore, IntPtr.Zero);
+    uint target = GetWindowThreadProcessId(hwnd, IntPtr.Zero);
+    uint cur = GetCurrentThreadId();
+    AttachThreadInput(cur, foreThread, true);
+    AttachThreadInput(cur, target, true);
+    SetForegroundWindow(hwnd);
+    AttachThreadInput(cur, target, false);
+    AttachThreadInput(cur, foreThread, false);
+    Park(hwnd);
+  }
+  public static void Click(IntPtr hwnd, int x, int y, bool right, int times) {
+    if (hwnd == IntPtr.Zero) return;
+    Park(hwnd);
+    RECT rect;
+    GetWindowRect(hwnd, out rect);
+    POINT p = new POINT();
+    p.X = rect.Left + x;
+    p.Y = rect.Top + y;
+    ScreenToClient(hwnd, ref p);
+    if (p.X < 0) p.X = 0;
+    if (p.Y < 0) p.Y = 0;
+    uint down = right ? 0x0204u : 0x0201u;
+    uint up = right ? 0x0205u : 0x0202u;
+    IntPtr lp = new IntPtr((p.Y << 16) | (p.X & 0xFFFF));
+    int n = times < 1 ? 1 : times;
+    for (int i = 0; i < n; i++) {
+      PostMessage(hwnd, down, new IntPtr(1), lp);
+      PostMessage(hwnd, up, IntPtr.Zero, lp);
+    }
+  }
+}
+"@
+}
+`
+}
+
+function rememberWindows(output: string): void {
+  const hwnd = output.match(/HWND:(\d+)/)?.[1]
+  const home = output.match(/HOME:(\d+)/)?.[1]
+  if (hwnd && hwnd !== '0') workHwnd = hwnd
+  if (home && home !== '0') homeHwnd = home
+}
+
+const BLANK_FRAME = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+function blankFrame() {
+  windowShot = false
+  return {
+    image: BLANK_FRAME,
+    width: 8,
+    height: 8,
+    screenWidth: 8,
+    screenHeight: 8,
+    framed: false as const,
+  }
+}
+
+function offscreenWrap(inner: string): string {
+  if (!workHwnd) return inner
+  return `
+${deskApi()}
+$work = [IntPtr]::new([int64]${workHwnd})
+$home = [IntPtr]::new([int64]${homeHwnd || '0'})
+[QuorumDesk]::QuietFocus($work)
+${inner}
+if ($home -ne [IntPtr]::Zero) { [QuorumDesk]::SetForegroundWindow($home) | Out-Null }
+[QuorumDesk]::Park($work)
+`
+}
+
+function saveJpeg(path: string, source: string, realW: string, realH: string): string {
+  return `
+$maxW = 960
+$scale = [Math]::Min(1.0, $maxW / [double](${realW}))
+$w = [int][Math]::Round((${realW}) * $scale)
+$h = [int][Math]::Round((${realH}) * $scale)
+$dst = New-Object System.Drawing.Bitmap $w, $h
+$g2 = [System.Drawing.Graphics]::FromImage($dst)
+$g2.DrawImage(${source}, 0, 0, $w, $h)
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+$quality = New-Object System.Drawing.Imaging.EncoderParameters 1
+$quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long]55)
+$dst.Save('${escapePsSingle(path)}', $codec, $quality)
+$quality.Dispose(); $g2.Dispose(); $dst.Dispose()
+Write-Output ((${realW}).ToString() + 'x' + (${realH}).ToString() + '|' + $w.ToString() + 'x' + $h.ToString())
+`
+}
+
+function windowShotScript(path: string): string {
+  return `
+${deskApi()}
+$hwnd = [IntPtr]::new([int64]${workHwnd})
+[QuorumDesk]::Park($hwnd)
+Start-Sleep -Milliseconds 90
+$rect = New-Object 'QuorumDesk+RECT'
+[QuorumDesk]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
+$bw = $rect.Right - $rect.Left
+$bh = $rect.Bottom - $rect.Top
+if ($bw -lt 80 -or $bh -lt 80) { throw 'Window is not ready.' }
+$src = New-Object System.Drawing.Bitmap $bw, $bh
+$g = [System.Drawing.Graphics]::FromImage($src)
+$hdc = $g.GetHdc()
+$ok = [QuorumDesk]::PrintWindow($hwnd, $hdc, 2)
+$g.ReleaseHdc($hdc)
+if (-not $ok) { $g.Dispose(); $src.Dispose(); throw 'Could not read that window.' }
+${saveJpeg(path, '$src', '$bw', '$bh')}
+$g.Dispose(); $src.Dispose()
+`
 }
 
 async function takeScreenshot(
   token: string | undefined,
-): Promise<{ image: string; width: number; height: number; screenWidth: number; screenHeight: number }> {
+): Promise<{ image: string; width: number; height: number; screenWidth: number; screenHeight: number; framed: boolean }> {
   assertDesktopToken(token)
   if (!desktopAgentReady()) throw new DesktopBusyError('Desktop control is only available on Windows in this build.')
   const path = join(tmpdir(), `quorum-desk-${randomBytes(8).toString('hex')}.jpg`)
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$src = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-$g = [System.Drawing.Graphics]::FromImage($src)
-$g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-$maxW = 1280
-$scale = [Math]::Min(1.0, $maxW / [double]$bounds.Width)
-$w = [int][Math]::Round($bounds.Width * $scale)
-$h = [int][Math]::Round($bounds.Height * $scale)
-$dst = New-Object System.Drawing.Bitmap $w, $h
-$g2 = [System.Drawing.Graphics]::FromImage($dst)
-$g2.DrawImage($src, 0, 0, $w, $h)
-$dst.Save('${escapePsSingle(path)}', [System.Drawing.Imaging.ImageFormat]::Jpeg)
-$g2.Dispose(); $dst.Dispose(); $g.Dispose(); $src.Dispose()
-Write-Output ($bounds.Width.ToString() + 'x' + $bounds.Height.ToString() + '|' + $w.ToString() + 'x' + $h.ToString())
-`
-  try {
+  const readSize = async (script: string) => {
     const size = await runPowerShell(script)
     const match = size.match(/(\d+)x(\d+)\|(\d+)x(\d+)/)
-    const screenWidth = match ? Number(match[1]) : 0
-    const screenHeight = match ? Number(match[2]) : 0
-    const width = match ? Number(match[3]) : 0
-    const height = match ? Number(match[4]) : 0
-    const bytes = await readFile(path)
     return {
-      image: `data:image/jpeg;base64,${bytes.toString('base64')}`,
-      width,
-      height,
-      screenWidth,
-      screenHeight,
+      screenWidth: match ? Number(match[1]) : 0,
+      screenHeight: match ? Number(match[2]) : 0,
+      width: match ? Number(match[3]) : 0,
+      height: match ? Number(match[4]) : 0,
+    }
+  }
+  try {
+    if (!workHwnd) return blankFrame()
+    try {
+      const size = await readSize(windowShotScript(path))
+      windowShot = true
+      const bytes = await readFile(path)
+      return {
+        image: `data:image/jpeg;base64,${bytes.toString('base64')}`,
+        ...size,
+        framed: true,
+      }
+    } catch {
+      return blankFrame()
     }
   } finally {
     await unlink(path).catch(() => undefined)
@@ -195,13 +346,21 @@ Write-Output ($bounds.Width.ToString() + 'x' + $bounds.Height.ToString() + '|' +
 }
 
 function mouseScript(x: number, y: number, click: 'none' | 'left' | 'right', clicks = 1): string {
+  if (workHwnd) {
+    if (click === 'none') return ''
+    const right = click === 'right' ? '$true' : '$false'
+    return `
+${deskApi()}
+[QuorumDesk]::Click([IntPtr]::new([int64]${workHwnd}), ${Math.round(x)}, ${Math.round(y)}, ${right}, ${clicks})
+`
+  }
   const downUp =
     click === 'none'
       ? ''
       : click === 'left'
-        ? '[QuorumUser32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30; [QuorumUser32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)'
-        : '[QuorumUser32]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30; [QuorumUser32]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)'
-  const extra = click !== 'none' && clicks === 2 ? `; Start-Sleep -Milliseconds 50; ${downUp}` : ''
+        ? '[QuorumUser32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 20; [QuorumUser32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)'
+        : '[QuorumUser32]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 20; [QuorumUser32]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)'
+  const extra = click !== 'none' && clicks === 2 ? `; Start-Sleep -Milliseconds 30; ${downUp}` : ''
   return `
 Add-Type @"
 using System;
@@ -333,6 +492,32 @@ const APP_ALIASES: Record<string, string> = {
 const DENY_APP =
   /^(format|diskpart|reg|regedit|shutdown|rundll32|mshta|wscript|cscript|bitsadmin|certutil|msiexec|mmc|cmdlet)$/i
 
+function launchScript(search: string, file: string): string {
+  const wanted = escapePsSingle(search)
+  const exe = escapePsSingle(file)
+  return `
+${deskApi()}
+$home = [QuorumDesk]::GetForegroundWindow()
+$wanted = '${wanted}'
+$needle = $wanted -replace '\\s',''
+$hit = Get-StartApps | Where-Object { $_.Name -eq $wanted -or ($_.Name -replace '\\s','') -like ('*' + $needle + '*') } | Select-Object -First 1
+if ($hit) {
+  Start-Process ('shell:AppsFolder\\' + $hit.AppID) -WindowStyle Minimized
+} else {
+  Start-Process -FilePath '${exe}' -WindowStyle Minimized
+}
+$found = [IntPtr]::Zero
+for ($i = 0; $i -lt 8 -and $found -eq [IntPtr]::Zero; $i++) {
+  Start-Sleep -Milliseconds 200
+  $proc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like ('*' + $needle + '*') -or $_.MainWindowTitle -like ('*' + $wanted + '*')) } | Select-Object -First 1
+  if ($proc) { $found = [IntPtr]$proc.MainWindowHandle }
+}
+if ($found -ne [IntPtr]::Zero) { [QuorumDesk]::Park($found) }
+if ($home -ne [IntPtr]::Zero) { [QuorumDesk]::SetForegroundWindow($home) | Out-Null }
+Write-Output ('HWND:' + $found.ToInt64() + '|HOME:' + $home.ToInt64())
+`
+}
+
 export function resolveDesktopApp(raw: string): string | null {
   const name = raw.replace(/['"]/g, '').trim().toLowerCase().replace(/\.exe$/, '')
   if (!name) return null
@@ -366,6 +551,7 @@ async function runDesktopInput(token: string | undefined, input: DesktopInput): 
   assertDesktopToken(token)
   if (!desktopAgentReady()) throw new DesktopBusyError('Desktop control is only available on Windows in this build.')
   if (input.kind === 'move') {
+    if (workHwnd) return
     await runPowerShell(mouseScript(input.x, input.y, 'none'))
     return
   }
@@ -375,6 +561,15 @@ async function runDesktopInput(token: string | undefined, input: DesktopInput): 
   }
   if (input.kind === 'scroll') {
     const dy = Math.max(-2400, Math.min(2400, Math.round(input.dy)))
+    if (workHwnd) {
+      await runPowerShell(`
+${deskApi()}
+$hwnd = [IntPtr]::new([int64]${workHwnd})
+[QuorumDesk]::Park($hwnd)
+[QuorumDesk]::PostMessage($hwnd, 0x020A, [IntPtr]::new(${dy << 16}), [IntPtr]::Zero) | Out-Null
+`)
+      return
+    }
     const wheel = dy >>> 0
     const script = `
 Add-Type @"
@@ -395,13 +590,13 @@ public class QuorumUser32 {
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.SendKeys]::SendWait('${escapePsSingle(text.replace(/[+^%~(){}]/g, '{$&}'))}')
 `
-    await runPowerShell(script)
+    await runPowerShell(offscreenWrap(script))
     return
   }
   if (input.kind === 'key') {
     const raw = String(input.key ?? '').trim().toLowerCase()
     if (needsHotkey(raw)) {
-      await runPowerShell(hotkeyScript(raw))
+      await runPowerShell(offscreenWrap(hotkeyScript(raw)))
       return
     }
     const send = KEY_MAP[raw] ?? (raw.length === 1 ? raw : '')
@@ -410,19 +605,28 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.SendKeys]::SendWait('${escapePsSingle(send)}')
 `
-    await runPowerShell(script)
+    await runPowerShell(offscreenWrap(script))
     return
   }
   if (input.kind === 'launch') {
     const app = resolveDesktopApp(input.app)
     if (!app) throw new Error('That app cannot be launched.')
-    await runPowerShell(`Start-Process -FilePath '${escapePsSingle(app)}'`)
+    const search = input.app.replace(/['"]/g, '').trim().replace(/\.exe$/i, '').slice(0, 60)
+    rememberWindows(await runPowerShell(launchScript(search, app)))
     return
   }
   if (input.kind === 'open') {
     const url = publicWebsite(input.url)
     if (!url) throw new Error('That address is not a public page.')
-    await runPowerShell(`Start-Process '${escapePsSingle(url.toString())}'`)
+    const opened = await runPowerShell(`
+${deskApi()}
+$home = [QuorumDesk]::GetForegroundWindow()
+Start-Process '${escapePsSingle(url.toString())}'
+Start-Sleep -Milliseconds 200
+if ($home -ne [IntPtr]::Zero) { [QuorumDesk]::SetForegroundWindow($home) | Out-Null }
+Write-Output ('HWND:0|HOME:' + $home.ToInt64())
+`)
+    rememberWindows(opened)
   }
 }
 
