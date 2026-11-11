@@ -52,7 +52,7 @@ export function agentPlugin(): Plugin {
       const file = quorumDesktopCommand(paired.code, `${proto}://${host}/agent`)
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/octet-stream')
-      res.setHeader('Content-Disposition', 'attachment; filename="QuorumDesktop.cmd"')
+      res.setHeader('Content-Disposition', 'attachment; filename="QSIDesktop.cmd"')
       res.end(file)
       return
     }

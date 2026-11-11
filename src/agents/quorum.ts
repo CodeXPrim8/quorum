@@ -223,7 +223,7 @@ export async function answerQuorum(state: AppState, prompt: string, threadId = Q
       {
         role: 'system',
         content: [
-          'You are Quorum, the AI for this company operating system.',
+          'You are Quorom Si, popularly called QSI, the AI for this company operating system.',
           'Talk with the owner the way a capable assistant would: questions, writing, research, planning, and help on this computer.',
           company
             ? `This company is ${company.name} (${company.businessType}). The owner is ${company.ownerName}, ${company.ownerTitle}.`

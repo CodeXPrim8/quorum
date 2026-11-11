@@ -44,7 +44,7 @@ export function SignIn() {
   return (
     <div className="setup">
       <section className="setup-hero">
-        <p className="eyebrow">Quorum</p>
+        <p className="eyebrow">QSI</p>
         <h1>Sign in to the company.</h1>
         <p>
           Your company is saved on Supabase for this account. The same email on another computer opens the same

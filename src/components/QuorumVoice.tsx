@@ -184,7 +184,7 @@ export function QuorumVoice({
     <div className="call quorum-call" role="dialog" aria-label="Voice chat with Quorum">
       <header className="call-top">
         <p>{clock(seconds)}</p>
-        <strong>Quorum</strong>
+        <strong>Quorom Si</strong>
         <span>{label}</span>
       </header>
       <div className="quorum-call-stage">

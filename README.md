@@ -1,6 +1,6 @@
-# Quorum
+# Quorom Si
 
-Quorum is an open-source web app for running a company with AI staff. The owner appoints executives, gives managers their own staff, delegates tasks, and watches the office move only when the work does.
+Quorom Si, popularly called QSI, is an open-source web app for running a company with AI staff. The owner appoints executives, gives managers their own staff, delegates tasks, and watches the office move only when the work does.
 
 The repository started empty. This version uses **Vite, React, and TypeScript**. Staff use a linked chat model (DeepSeek) as their brain; OpenAI is voice and Maya’s photograph layer only.
 

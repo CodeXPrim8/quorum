@@ -18,7 +18,7 @@ export function Approvals({ state, dispatch, now }: { state: AppState; dispatch:
           <h1>Approvals</h1>
           <p className="lede">
             Day-to-day work starts without you. A new company goal, and anything that publishes, sends, buys, pays, hires,
-            places a sports slip, or uses this computer, stops here. Approving a slip lets Quorum Desktop place that slip. It is not a guaranteed win.
+            places a sports slip, or uses this computer, stops here. Approving a slip lets QSI Desktop place that slip. It is not a guaranteed win.
           </p>
         </div>
       </header>

@@ -6,7 +6,7 @@ export function quorumDesktopCommand(code: string, gateway: string): string {
   if (!/^wss?:\/\/[^'"\s]+$/i.test(socket)) throw new Error('Gateway address is not valid.')
   const script = desktopScript(pair, socket)
   return `@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'QuorumDesktop.ps1'; Get-Content -LiteralPath '%~f0' | Select-Object -Skip 4 | Set-Content -LiteralPath $p -Encoding UTF8; powershell -NoProfile -ExecutionPolicy Bypass -File $p"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'QSIDesktop.ps1'; Get-Content -LiteralPath '%~f0' | Select-Object -Skip 4 | Set-Content -LiteralPath $p -Encoding UTF8; powershell -NoProfile -ExecutionPolicy Bypass -File $p"
 exit /b
 REM QUORUM-DESKTOP
 ${script}`

@@ -113,7 +113,7 @@ export function ComputerPanel({
     <div className={picture ? 'computer-panel is-live' : 'computer-panel'}>
       <section className="computer-agent">
         <p>
-          <strong>Quorum Desktop. </strong>
+          <strong>QSI Desktop. </strong>
           {selected?.online
             ? `${selected.name} is online. Allow computer use and Quorum will move that PC’s real mouse.`
             : 'Download Quorum Desktop and open the file. This website connects to that PC on its own.'}

@@ -68,9 +68,9 @@ export function Shell({
       </a>
       <nav className="nav" aria-label="Company">
         <a className="brand-pill" href="#/overview">
-          <span className="brand-mark">Q</span>
+          <span className="brand-mark">QSI</span>
           <span>
-            <strong>Quorum</strong>
+            <strong>Quorom Si</strong>
             <small>{state.company?.name ?? 'No company yet'}</small>
           </span>
         </a>
@@ -128,6 +128,14 @@ export function Shell({
       <div className="workspace">
         <header className="topbar">
           <PlaceWidget />
+          {onSignOut && (
+            <div className="top-account">
+              {account && <span>{account}</span>}
+              <button type="button" className="btn" onClick={onSignOut}>
+                Sign out
+              </button>
+            </div>
+          )}
         </header>
         <main
           id="content"
@@ -411,7 +419,7 @@ export function ErrorState({ message, onReset }: { message: string; onReset: () 
   return (
     <div className="gate">
       <p className="eyebrow">Something needs attention</p>
-      <h1>Quorum could not open the saved company</h1>
+      <h1>Quorom Si could not open the saved company</h1>
       <p className="lede">{message}</p>
       <button type="button" className="btn btn-primary" onClick={onReset}>
         Clear saved data and start over

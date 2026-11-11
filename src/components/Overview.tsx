@@ -189,7 +189,7 @@ export function Overview({
       )}
       {talking && (
         <header className="quorum-head">
-          <strong>Quorum</strong>
+          <strong>Quorom Si</strong>
           <button type="button" className="voice-chat" onClick={() => void startVoice()}>
             <PhoneIcon />
             Voice chat

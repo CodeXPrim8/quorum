@@ -8,9 +8,10 @@ import { isOfficeLife } from '../domain/reports'
 import { blankState, withDesigner, withMarketsTeam, withSecurityTeam, withSportsAnalyst } from '../domain/sample'
 import { settledPresence } from '../office/presence'
 import { nextDesk } from '../office/world'
-import type { AppState, Command, Staff } from '../types'
+import type { AppState, Command, CompanyInput, Staff } from '../types'
 
 const STORAGE_KEY = 'quorum.state.v1'
+export const PENDING_COMPANY_KEY = 'qsi.pendingCompany.v1'
 
 type StoreValue = {
   state: AppState | null
@@ -113,6 +114,19 @@ function readLocal(reducedMotion: boolean): { state: AppState | null; error: str
   }
 }
 
+function companyFromPending(base: AppState): AppState | null {
+  const raw = sessionStorage.getItem(PENDING_COMPANY_KEY)
+  if (!raw) return null
+  sessionStorage.removeItem(PENDING_COMPANY_KEY)
+  try {
+    const input = JSON.parse(raw) as CompanyInput
+    if (!input?.name || !Array.isArray(input.enabledRoleKeys)) return null
+    return applyCommand(base, { type: 'CREATE_COMPANY', input }, Date.now())
+  } catch {
+    return null
+  }
+}
+
 function openState(source: AppState | null, reducedMotion: boolean): { state: AppState | null; error: string | null } {
   if (source?.company?.id === 'co_northline' || source?.company?.name === 'Northline Supply Co.') {
     return { state: blankState(reducedMotion), error: null }
@@ -161,10 +175,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const remote = await loadCloudState(next.userId)
         if (gone) return
         const loaded = openState(remote, reduced)
+        const pending = !remote ? companyFromPending(blankState(reduced)) : null
+        const nextState = pending ?? loaded.state
         setError(loaded.error)
-        setState(loaded.state)
-        if (!remote && loaded.state?.company) {
-          void saveCloudState(next.userId, loaded.state)
+        setState(nextState)
+        if (nextState?.company && (!remote || pending)) {
+          void saveCloudState(next.userId, nextState)
         }
       } catch (err) {
         if (gone) return
@@ -187,9 +203,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void loadCloudState(next.userId)
         .then((remote) => {
           const loaded = openState(remote, reduced)
+          const pending = !remote ? companyFromPending(blankState(reduced)) : null
+          const nextState = pending ?? loaded.state
           setError(loaded.error)
-          setState(loaded.state)
-          if (!remote && loaded.state?.company) void saveCloudState(next.userId, loaded.state)
+          setState(nextState)
+          if (nextState?.company && (!remote || pending)) void saveCloudState(next.userId, nextState)
         })
         .catch((err: unknown) => {
           setError(err instanceof Error ? err.message : 'The company could not be loaded from Supabase.')

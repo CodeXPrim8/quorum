@@ -12,7 +12,6 @@ import { Settings } from './components/Settings'
 import { Billing } from './components/Billing'
 import { ErrorState, LoadingState, Shell } from './components/Shell'
 import { Setup } from './components/Setup'
-import { SignIn } from './components/SignIn'
 import { Tasks } from './components/Tasks'
 import { VoiceCall } from './components/VoiceCall'
 import { QuorumVoice } from './components/QuorumVoice'
@@ -51,10 +50,10 @@ export function App() {
   }, [])
 
   if (!ready) return <LoadingState />
-  if (cloud && !session) return <SignIn />
+  if (cloud && !session) return <Setup dispatch={dispatch} needsAccount />
   if (error || !state) return <ErrorState message={error ?? 'The company could not be loaded.'} onReset={clearSaved} />
   if (!state.company || route.view === 'setup') {
-    return <Setup dispatch={dispatch} />
+    return <Setup dispatch={dispatch} account={session?.email} onSignOut={cloud ? signOut : undefined} />
   }
 
   const goStaff = (id: string) => {
