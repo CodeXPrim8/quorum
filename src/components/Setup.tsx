@@ -55,16 +55,16 @@ export function Setup({
   function companyInput(): CompanyInput | null {
     if (!name.trim() || !ownerName.trim() || !ownerGender) {
       setError('Add a company name, your name, and your gender.')
-      return
+      return null
     }
     if (website.trim() && !normalizeWebsite(website)) {
       setError('Enter a website like example.com, or leave it blank.')
-      return
+      return null
     }
     const badSocial = invalidSocial(social)
     if (badSocial) {
       setError('Enter a full social link, or leave it blank.')
-      return
+      return null
     }
     const input: CompanyInput = {
       name,
