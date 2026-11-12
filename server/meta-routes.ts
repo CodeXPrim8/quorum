@@ -7,8 +7,8 @@ import {
   metaAppReady,
   readOAuthState,
   saveCompanyWhatsApp,
-} from './meta-oauth'
-import { clearCompanyChannelCloud, cloudMetaConfig } from './meta-store'
+} from './meta-oauth.js'
+import { clearCompanyChannelCloud, cloudMetaConfig } from './meta-store.js'
 
 function json(res: ServerResponse, status: number, body: unknown) {
   res.statusCode = status
@@ -63,7 +63,7 @@ export async function serveMeta(req: IncomingMessage, res: ServerResponse, pathn
     return
   }
 
-  if (pathname === '/api/meta/instagram/connect' && method === 'GET') {
+  if (pathname === '/api/meta/instagram/connect' && (method === 'GET' || method === 'HEAD')) {
     const companyId = String(url.searchParams.get('companyId') ?? '').trim()
     if (!companyId) {
       json(res, 400, { error: 'companyId is required.' })

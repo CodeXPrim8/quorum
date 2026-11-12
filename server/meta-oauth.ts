@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import type { InstagramEnv } from './instagram'
-import { instagramEnv } from './instagram'
+import type { InstagramEnv } from './instagram.js'
+import { instagramEnv } from './instagram.js'
 import {
   encryptKeyFromEnv,
   cloudMetaConfig,
@@ -12,8 +12,8 @@ import {
   type CompanyInstagramSecret,
   type CompanyMetaSecret,
   type CompanyWhatsAppSecret,
-} from './meta-store'
-import { whatsAppEnv, type WaEnv } from './whatsapp'
+} from './meta-store.js'
+import { whatsAppEnv, type WaEnv } from './whatsapp.js'
 
 export type MetaAppEnv = {
   appId: string
