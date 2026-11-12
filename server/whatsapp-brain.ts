@@ -1,5 +1,3 @@
-import { planClientTurn } from '../src/domain/whatsapp-sales.ts'
-import type { PriceEntry, Product, WaMessage, WaSale } from '../src/types.ts'
 import type { WaEnv, WaInbound } from './whatsapp.js'
 import { sendWhatsAppText } from './whatsapp.js'
 import {
@@ -98,43 +96,76 @@ export async function sendIsDuplicate(phone: string, text: string, inReplyTo?: s
 
 async function draftReply(context: SalesContext | undefined, chat: LogChat, text: string): Promise<{ text: string; sale: LogChat['sale']; effect?: LogEffect }> {
   const company = context?.company || 'the company'
-  const handler = context?.handler ?? null
-  const history: WaMessage[] = chat.messages.slice(-12).map((message) => ({
-    id: message.id,
-    at: message.at,
-    author: message.author,
-    text: message.text,
-    status: message.status,
-  }))
-  const prices = (context?.prices ?? []) as PriceEntry[]
-  const products = (context?.products ?? []).map((product) => ({ ...product, kind: 'hardware' as const })) as Product[]
-  const plan = planClientTurn({
-    company,
-    handler,
-    sales: context?.sales ?? handler,
-    text,
-    profileName: chat.name,
-    phone: chat.phone,
-    sale: chat.sale as WaSale | undefined,
-    history,
-    prices,
-    products,
-    now: Date.now(),
-    account: context?.account,
-  })
-  const spoken = RETIRED.test(plan.reply) ? `Hello, this is ${handler?.name || company}. How can I help you today?` : await speak(company, handler?.name || company, plan.reply, history)
+  const staffName = context?.handler?.name || company
+  const draft = briefFor(context, chat, text, staffName)
+  const history = chat.messages.slice(-12).map((message) => ({ author: message.author, text: message.text }))
+  const spoken = await speak(company, staffName, draft.text, history)
+  return { text: spoken, sale: draft.sale }
+}
+
+function briefFor(context: SalesContext | undefined, chat: LogChat, text: string, staffName: string): { text: string; sale: LogChat['sale'] } {
+  const company = context?.company || 'the company'
+  const sale = chat.sale ?? { stage: 'open' }
+  const priced = freshPrice(context, `${sale.item ?? ''} ${text}`)
+  const bargain = /\b(too (?:much|expensive|high)|high side|on the high|last price|gen it go|better price|come down|discount|lowest|final price)\b/i.test(text)
+  const checkIn = /^(are you there|you there|hello|hi|hey)\b/i.test(text.trim())
+  if (checkIn && sale.priceAmount) {
+    return { text: `Yes, I am here. The price is still ${sale.priceAmount}. Tell me if you want to go ahead.`, sale }
+  }
+  if (checkIn) {
+    return { text: `Yes, I am here. Tell me what you need.`, sale }
+  }
+  if (sale.stage === 'quoted' && sale.priceAmount && bargain) {
+    const floor = priced?.floor && lower(priced.floor, priced.amount) ? priced.floor : ''
+    if (floor && !sale.offeredFloor) {
+      return { text: `I can do ${floor}. That is the lowest I can confirm.`, sale: { ...sale, priceAmount: floor, offeredFloor: true } }
+    }
+    return { text: `${sale.priceAmount} is the lowest I can confirm. If you want it, I will prepare the invoice.`, sale }
+  }
+  if (sale.stage === 'quoted' && sale.priceAmount) {
+    return { text: `The price is still ${sale.priceAmount}. Tell me if you want to go ahead, and I will prepare the invoice.`, sale }
+  }
+  if (priced && !bargain) {
+    return {
+      text: `The current price is ${priced.amount}. Tell me if you want to go ahead, and I will prepare the invoice.`,
+      sale: { ...sale, stage: 'quoted', item: sale.item || priced.item, priceAmount: priced.amount },
+    }
+  }
+  const item = sale.item || mentionedItem(text)
+  if (item && !hasDetail(text)) {
+    return { text: `I can help with ${item}. Which brand do you prefer, and how many do you need?`, sale: { ...sale, stage: 'qualifying', item } }
+  }
   return {
-    text: spoken,
-    sale: plan.sale,
-    effect: {
-      customer: plan.customer,
-      invoice: plan.invoice,
-      call: plan.call,
-    },
+    text: `Hello, this is ${staffName} from ${company}. I am confirming the price and I will send it in this chat. I will not guess a figure.`,
+    sale: item ? { ...sale, stage: 'awaiting_price', item } : sale,
   }
 }
 
-async function speak(company: string, staffName: string, draft: string, history: WaMessage[]): Promise<string> {
+function freshPrice(context: SalesContext | undefined, text: string) {
+  const prices = context?.prices ?? []
+  const hit = [...prices].reverse().find((price) => text.toLowerCase().includes(price.item.toLowerCase()))
+  if (!hit) return undefined
+  const at = Date.parse(hit.confirmedAt)
+  if (!Number.isFinite(at) || Date.now() - at > 2 * 24 * 60 * 60 * 1000) return undefined
+  return hit
+}
+
+function lower(floor: string, amount: string): boolean {
+  const left = Number(floor.replace(/[^\d.]/g, ''))
+  const right = Number(amount.replace(/[^\d.]/g, ''))
+  return left > 0 && right > 0 && left < right
+}
+
+function mentionedItem(text: string): string {
+  const word = text.match(/\b(laptops?|phones?|computers?|generators?|solar|websites?|logos?)\b/i)?.[1] ?? ''
+  return word.toLowerCase().replace(/s$/, '')
+}
+
+function hasDetail(text: string): boolean {
+  return /\b(hp|dell|lenovo|apple|asus|acer|gb|unit|units)\b/i.test(text) && /\b\d{1,3}\b/.test(text.replace(/\b\d{4,}\b/g, ''))
+}
+
+async function speak(company: string, staffName: string, draft: string, history: { author: string; text: string }[]): Promise<string> {
   const transcript = history
     .slice(-8)
     .map((message) => `${message.author === 'client' ? 'Customer' : 'You'}: ${message.text}`)
