@@ -97,88 +97,80 @@ export async function sendIsDuplicate(phone: string, text: string, inReplyTo?: s
 async function draftReply(context: SalesContext | undefined, chat: LogChat, text: string): Promise<{ text: string; sale: LogChat['sale']; effect?: LogEffect }> {
   const company = context?.company || 'the company'
   const staffName = context?.handler?.name || company
-  const draft = briefFor(context, chat, text, staffName)
+  const sale = nextSale(chat.sale, text)
   const history = chat.messages.slice(-12).map((message) => ({ author: message.author, text: message.text }))
-  const spoken = await speak(company, staffName, draft.text, history)
-  return { text: spoken, sale: draft.sale }
+  const allowed = allowedPrices(context, sale.item)
+  const spoken = await speak(company, staffName, text, history, allowed)
+  const safe = spoken && !inventedPrice(spoken, allowed) ? spoken : humanFallback(company, staffName, text, sale, allowed)
+  return { text: safe, sale }
 }
 
-function briefFor(context: SalesContext | undefined, chat: LogChat, text: string, staffName: string): { text: string; sale: LogChat['sale'] } {
-  const company = context?.company || 'the company'
-  const sale = chat.sale ?? { stage: 'open' }
-  const priced = freshPrice(context, `${sale.item ?? ''} ${text}`)
-  const bargain = /\b(too (?:much|expensive|high)|high side|on the high|last price|gen it go|better price|come down|discount|lowest|final price)\b/i.test(text)
-  const checkIn = /^(are you there|you there|hello|hi|hey)\b/i.test(text.trim())
-  if (checkIn && sale.priceAmount) {
-    return { text: `Yes, I am here. The price is still ${sale.priceAmount}. Tell me if you want to go ahead.`, sale }
-  }
-  if (checkIn) {
-    return { text: `Yes, I am here. Tell me what you need.`, sale }
-  }
-  if (sale.stage === 'quoted' && sale.priceAmount && bargain) {
-    const floor = priced?.floor && lower(priced.floor, priced.amount) ? priced.floor : ''
-    if (floor && !sale.offeredFloor) {
-      return { text: `I can do ${floor}. That is the lowest I can confirm.`, sale: { ...sale, priceAmount: floor, offeredFloor: true } }
-    }
-    return { text: `${sale.priceAmount} is the lowest I can confirm. If you want it, I will prepare the invoice.`, sale }
-  }
-  if (sale.stage === 'quoted' && sale.priceAmount) {
-    return { text: `The price is still ${sale.priceAmount}. Tell me if you want to go ahead, and I will prepare the invoice.`, sale }
-  }
-  if (priced && !bargain) {
-    return {
-      text: `The current price is ${priced.amount}. Tell me if you want to go ahead, and I will prepare the invoice.`,
-      sale: { ...sale, stage: 'quoted', item: sale.item || priced.item, priceAmount: priced.amount },
-    }
-  }
-  const item = sale.item || mentionedItem(text)
-  if (item && !hasDetail(text)) {
-    return { text: `I can help with ${item}. Which brand do you prefer, and how many do you need?`, sale: { ...sale, stage: 'qualifying', item } }
-  }
-  return {
-    text: `Hello, this is ${staffName} from ${company}. I am confirming the price and I will send it in this chat. I will not guess a figure.`,
-    sale: item ? { ...sale, stage: 'awaiting_price', item } : sale,
-  }
+function nextSale(current: LogChat['sale'], text: string): NonNullable<LogChat['sale']> {
+  const sale = current ?? { stage: 'open' }
+  const item = mentionedItem(text) || sale.item
+  if (!item) return sale
+  return { ...sale, item, stage: sale.stage === 'open' ? 'qualifying' : sale.stage }
 }
 
-function freshPrice(context: SalesContext | undefined, text: string) {
-  const prices = context?.prices ?? []
-  const hit = [...prices].reverse().find((price) => text.toLowerCase().includes(price.item.toLowerCase()))
-  if (!hit) return undefined
-  const at = Date.parse(hit.confirmedAt)
-  if (!Number.isFinite(at) || Date.now() - at > 2 * 24 * 60 * 60 * 1000) return undefined
-  return hit
+function allowedPrices(context: SalesContext | undefined, item: string | undefined) {
+  if (!item) return []
+  return (context?.prices ?? []).filter((price) => price.item.toLowerCase() === item || item.includes(price.item.toLowerCase()))
 }
 
-function lower(floor: string, amount: string): boolean {
-  const left = Number(floor.replace(/[^\d.]/g, ''))
-  const right = Number(amount.replace(/[^\d.]/g, ''))
-  return left > 0 && right > 0 && left < right
+function humanFallback(
+  company: string,
+  staffName: string,
+  text: string,
+  sale: NonNullable<LogChat['sale']>,
+  allowed: { amount: string; floor?: string }[],
+): string {
+  const price = allowed.at(-1)
+  if (/^(are you there|you there|hello|hi|hey)\b/i.test(text.trim()) && price) {
+    return `Yes, I am here. The price is still ${price.amount}. Tell me if you want to go ahead.`
+  }
+  if (sale.item === 'starlink' || /\bstarlink\b/i.test(text)) {
+    return `Yes, we sell Starlink. Where are you located, and which kit do you want: Gen 2, Gen 3, High Performance, or Mini?`
+  }
+  if (sale.item === 'laptop' || /\blaptops?\b/i.test(text)) {
+    return `Yes, we can get you a laptop. What sort of work is it for, and do you already have a specification, or should I recommend one?`
+  }
+  if (sale.item) {
+    return `Yes, we deal on ${sale.item}. Where are you located, and what exactly do you need it for?`
+  }
+  return `Hello, this is ${staffName} from ${company}. Tell me what you are looking for and I will help you sort it.`
 }
 
 function mentionedItem(text: string): string {
-  const word = text.match(/\b(laptops?|phones?|computers?|generators?|solar|websites?|logos?)\b/i)?.[1] ?? ''
+  const word = text.match(/\b(starlinks?|laptops?|phones?|computers?|generators?|inverters?|solar|websites?|logos?|printers?|routers?)\b/i)?.[1] ?? ''
   return word.toLowerCase().replace(/s$/, '')
 }
 
-function hasDetail(text: string): boolean {
-  return /\b(hp|dell|lenovo|apple|asus|acer|gb|unit|units)\b/i.test(text) && /\b\d{1,3}\b/.test(text.replace(/\b\d{4,}\b/g, ''))
-}
-
-async function speak(company: string, staffName: string, draft: string, history: { author: string; text: string }[]): Promise<string> {
+async function speak(
+  company: string,
+  staffName: string,
+  latest: string,
+  history: { author: string; text: string }[],
+  allowed: { amount: string; floor?: string }[],
+): Promise<string> {
   const transcript = history
-    .slice(-8)
+    .slice(-10)
     .map((message) => `${message.author === 'client' ? 'Customer' : 'You'}: ${message.text}`)
     .join('\n')
+  const priceList = allowed.length
+    ? allowed.map((price) => `opening ${price.amount}${price.floor ? `, lowest ${price.floor}` : ''}`).join('; ')
+    : 'none yet'
   const system = [
-    `You are ${staffName} at ${company}, replying to a customer on WhatsApp.`,
-    'Write the next message only. Sound like a person: friendly, brief, and professional. Two to four sentences.',
-    'You understand informal English and Nigerian Pidgin.',
-    'Follow the brief. Do not add a price, a discount, or any number that is not already in the brief.',
-    'Do not say you are an AI, do not hand the customer to someone else, and do not say you will not send a price.',
-    'If they asked whether you are there, answer that first.',
+    `You are ${staffName}, a salesperson at ${company}.`,
+    `${company} is a technology company. It sells products and services such as laptops, phones, Starlink, solar, networking, printers, and repairs.`,
+    'Reply on WhatsApp in clear, friendly English. Two to four short sentences. You understand Nigerian Pidgin.',
+    'Answer the question they actually asked. If they ask whether you sell or deal on a product, say yes, then ask the useful next questions.',
+    'For Starlink, ask their location and which kit they want: Gen 2, Gen 3, High Performance, or Mini.',
+    'For a laptop, ask what the work is and whether they have a specification. If they want a recommendation for ordinary work, suggest a straightforward HP or Dell with 16GB RAM and 256GB storage.',
+    `Confirmed prices you may quote: ${priceList}.`,
+    'Do not invent a naira price. If no price is confirmed for what they want, do not mention money. Learn what they need first.',
+    'Do not say you are an AI. Do not say you will not guess a figure. Do not hand the chat to someone else.',
   ].join(' ')
-  const user = `Brief:\n${draft}\n\nConversation so far:\n${transcript || 'Customer just wrote.'}`
+  const user = `Latest customer message:\n${latest}\n\nConversation so far:\n${transcript || latest}`
   const openai = String(process.env.OPENAI_API_KEY ?? '').trim()
   const deepseek = String(process.env.DEEPSEEK_API_KEY ?? '').trim()
   const deepseekModel = String(process.env.DEEPSEEK_MODEL ?? 'deepseek-chat').trim() || 'deepseek-chat'
@@ -193,7 +185,7 @@ async function speak(company: string, staffName: string, draft: string, history:
         headers: { Authorization: `Bearer ${attempt.key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: attempt.model,
-          temperature: 0.6,
+          temperature: 0.7,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },
@@ -207,20 +199,28 @@ async function speak(company: string, staffName: string, draft: string, history:
       if (!response.ok) continue
       const data = (await response.json()) as { choices?: { message?: { content?: string } }[] }
       const next = String(data.choices?.[0]?.message?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 700)
-      if (next && sameAmounts(draft, next) && !RETIRED.test(next)) return next
+      if (next && !RETIRED.test(next) && !/will not guess a figure/i.test(next) && !inventedPrice(next, allowed)) return next
     } catch {
-      /* Try the next model. The brief is still safe to send. */
+      /* Try the next model. */
     }
   }
-  return draft
+  return ''
 }
 
-function sameAmounts(original: string, next: string): boolean {
-  const before = amounts(original)
-  const after = amounts(next)
-  return before.every((value) => after.includes(value)) && after.every((value) => before.includes(value))
+function inventedPrice(text: string, allowed: { amount: string; floor?: string }[]): boolean {
+  const allowedNumbers = new Set(allowed.flatMap((price) => priceFigures(`${price.amount} ${price.floor ?? ''}`)))
+  return priceFigures(text).some((value) => !allowedNumbers.has(value))
 }
 
-function amounts(text: string): string[] {
-  return [...text.matchAll(/\d[\d,]*/g)].map((match) => match[0].replace(/,/g, ''))
+function priceFigures(text: string): number[] {
+  const found = new Set<number>()
+  for (const match of text.matchAll(/(?:₦|NGN|naira)\s*([\d,]+)/gi)) {
+    const value = Number(match[1].replace(/,/g, ''))
+    if (value >= 1000) found.add(value)
+  }
+  for (const match of text.matchAll(/\b(\d{5,9})\b/g)) {
+    const value = Number(match[1])
+    if (value >= 1000) found.add(value)
+  }
+  return [...found]
 }
