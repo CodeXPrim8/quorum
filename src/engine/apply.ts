@@ -46,7 +46,8 @@ import { BILLING_PLANS, isPlanId } from '../domain/billing'
 import { lessonFromOwner, remember, type MemoryKind } from '../domain/memory'
 import { normalizeWebsite } from '../domain/website'
 import { fileApprovalRecord } from '../domain/records'
-import { clientLane, clientReply, pickStaff } from '../domain/whatsapp'
+import { clientLane, pickStaff } from '../domain/whatsapp'
+import { planClientTurn, quoteText, readOwnerPrice, sameItem } from '../domain/whatsapp-sales'
 import { actionLabel, approvalOutcome, rejectionOutcome } from './outcomes'
 import type {
   ActivityEvent,
@@ -60,11 +61,14 @@ import type {
   Company,
   CompanyInput,
   CompanyMetaStatus,
+  Customer,
+  CustomerInvoice,
   ConsequentialAction,
   DesktopMode,
   EventKind,
   Handoff,
   PermissionId,
+  PriceEntry,
   PlaybookStep,
   Pose,
   PresenceMode,
@@ -313,6 +317,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return markWhatsAppDelivery(state, command.phone, command.messageId, command.status, now)
     case 'WHATSAPP_DROP':
       return dropWhatsApp(state, command.phone)
+    case 'CONFIRM_PRICE':
+      return confirmListedPrice(state, command.item, command.amount, now)
     case 'INSTAGRAM_RESULT':
       return instagramResult(state, command.designId, command.status, now, command.error, command.mediaId)
     default:
@@ -2418,7 +2424,7 @@ function sendMessage(state: AppState, threadId: string, text: string, now: numbe
     const name = titleFromAsk(body)
     threads = state.threads.map((item) => (item.id === thread.id ? { ...item, name } : item))
   }
-  const next = learn({ ...state, threads, chat: [...state.chat, message] }, now, 'fact', taught ?? '')
+  const next = learnOwnerPrice(learn({ ...state, threads, chat: [...state.chat, message] }, now, 'fact', taught ?? ''), body, now)
   if (mentions.length === 0) return next
   const names = mentions
     .map((id) => state.staff.find((person) => person.id === id)?.name)
@@ -3031,9 +3037,23 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     active: isStaffActive(state, person),
   }))
   const person = lane.refused ? null : pickStaff(people, lane.keys)
-  const reply = clientReply(company.name, person, lane.refused)
+  const sales = pickStaff(people, ['quote_specialist', 'sales_manager', 'account_executive'])
   const name = command.name.trim().slice(0, 80) || phone
   const existing = chats.find((chat) => chat.id === phone)
+  const plan = planClientTurn({
+    company: company.name,
+    handler: person ? { id: person.id, name: person.name, title: person.title } : null,
+    sales: sales ? { id: sales.id, name: sales.name, title: sales.title } : null,
+    text,
+    profileName: name,
+    phone,
+    sale: existing?.sale,
+    history: existing?.messages ?? [],
+    prices: state.prices ?? [],
+    products: state.products ?? [],
+    now,
+  })
+  const reply = plan.reply
   const clientMessage: WaMessage = { id: messageId, at: iso(now), author: 'client', text, status: 'received' }
   const replyMessage: WaMessage = {
     id: `wa_${messageId}`.slice(0, 140),
@@ -3074,7 +3094,7 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
           {
             kind: 'work',
             startDetail: `${person.name} is reading ${name}'s WhatsApp message.`,
-            doneDetail: `${person.name} filed the WhatsApp request. Nothing was sent back to the client from this desk.`,
+            doneDetail: `${person.name} is handling the WhatsApp request. A price goes out only after it is confirmed.`,
             durationMs: 60_000,
           },
         ],
@@ -3099,6 +3119,9 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
       })
     }
   }
+  if (plan.customer) next = saveWhatsAppCustomer(next, phone, plan.customer, now)
+  if (plan.invoice) next = saveWhatsAppInvoice(next, phone, plan.invoice, person?.id, now)
+  for (const note of plan.notes) next = postStaffNote(next, note, now)
   const chat: WaChat = {
     id: phone,
     name: existing?.name && existing.name !== phone ? existing.name : name,
@@ -3106,9 +3129,172 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     messages: [...(existing?.messages ?? []), clientMessage, replyMessage].slice(-80),
     assigneeId: person?.id ?? existing?.assigneeId ?? null,
     taskId,
+    sale: plan.sale,
+    linked: command.linked,
     updatedAt: iso(now),
   }
   return { ...next, whatsapp: [chat, ...chats.filter((item) => item.id !== phone)] }
+}
+
+function confirmListedPrice(state: AppState, item: string, amountText: string, now: number): AppState {
+  const label = item.trim()
+  const read = readOwnerPrice(`${label} ${amountText}`, [label])
+  if (!label || !read) return state
+  const entry: PriceEntry = { id: uid('price'), item: label, amount: read.amount, confirmedAt: iso(now) }
+  let next: AppState = { ...state, prices: [...(state.prices ?? []), entry] }
+  const waiting = (next.whatsapp ?? []).filter(
+    (chat) => chat.sale?.stage === 'awaiting_price' && chat.sale.item && sameItem(chat.sale.item, label),
+  )
+  for (const chat of waiting) {
+    const correction = Boolean(chat.sale?.priceAmount && chat.sale.priceAmount !== read.amount)
+    const reply = quoteText(chat.sale?.item || label, chat.sale?.detail, read.amount, correction)
+    next = appendWhatsAppReply(next, chat.phone, reply, now, {
+      ...(chat.sale ?? { stage: 'quoted' }),
+      item: chat.sale?.item || label,
+      stage: 'quoted',
+      priceAmount: read.amount,
+    })
+  }
+  const sales = salesPerson(next)
+  if (sales && waiting.length > 0) {
+    next = postStaffNote(
+      next,
+      {
+        staffId: sales.id,
+        staffName: sales.name,
+        text: `Noted. ${label} is ${read.amount} as of today. I am sending that to ${waiting.map((chat) => chat.name).join(', ')} on WhatsApp.`,
+      },
+      now,
+    )
+  }
+  return next
+}
+
+function learnOwnerPrice(state: AppState, body: string, now: number): AppState {
+  const pending = (state.whatsapp ?? []).filter((chat) => chat.sale?.stage === 'awaiting_price' && chat.sale.item)
+  if (pending.length === 0) return state
+  const items = [...new Set(pending.map((chat) => chat.sale?.item ?? '').filter(Boolean))]
+  const read = readOwnerPrice(body, items)
+  if (!read) return state
+  const item = read.item ?? (items.length === 1 ? items[0] : '')
+  if (!item) return state
+  return confirmListedPrice(state, item, read.amount, now)
+}
+
+function appendWhatsAppReply(
+  state: AppState,
+  phone: string,
+  text: string,
+  now: number,
+  sale: WaChat['sale'],
+): AppState {
+  const digits = phone.replace(/\D/g, '')
+  const whatsapp = (state.whatsapp ?? []).map((chat) => {
+    if (chat.phone !== digits) return chat
+    const message: WaMessage = {
+      id: uid('wa'),
+      at: iso(now),
+      author: 'quorum',
+      text,
+      status: chat.linked === false ? 'held' : 'queued',
+    }
+    return { ...chat, messages: [...chat.messages, message].slice(-80), sale, updatedAt: iso(now) }
+  })
+  return { ...state, whatsapp }
+}
+
+function saveWhatsAppCustomer(
+  state: AppState,
+  phone: string,
+  customer: { name: string; email?: string; address?: string; company?: string; item?: string },
+  now: number,
+): AppState {
+  const list = state.customers ?? []
+  const prior = list.find((item) => item.phone === phone)
+  const saved: Customer = {
+    id: prior?.id ?? uid('cust'),
+    name: customer.name,
+    phone,
+    email: customer.email ?? prior?.email,
+    address: customer.address ?? prior?.address,
+    company: customer.company ?? prior?.company,
+    item: customer.item ?? prior?.item,
+    updatedAt: iso(now),
+  }
+  return {
+    ...state,
+    customers: [saved, ...list.filter((item) => item.phone !== phone)],
+    records: [
+      {
+        id: uid('rec'),
+        kind: 'crm' as const,
+        title: saved.name,
+        body: [saved.company, saved.phone, saved.email, saved.address, saved.item].filter(Boolean).join(' · ').slice(0, 500),
+        status: 'filed' as const,
+        at: iso(now),
+      },
+      ...(state.records ?? []),
+    ].slice(0, 200),
+  }
+}
+
+function saveWhatsAppInvoice(
+  state: AppState,
+  phone: string,
+  invoice: { number: string; item: string; detail?: string; amount: string; customerName: string },
+  staffId: string | undefined,
+  now: number,
+): AppState {
+  const customer = (state.customers ?? []).find((item) => item.phone === phone)
+  const saved: CustomerInvoice = {
+    id: uid('inv'),
+    number: invoice.number,
+    customerId: customer?.id ?? uid('cust'),
+    phone,
+    customerName: invoice.customerName,
+    item: invoice.item,
+    detail: invoice.detail,
+    amount: invoice.amount,
+    at: iso(now),
+  }
+  return {
+    ...state,
+    invoices: [saved, ...(state.invoices ?? [])].slice(0, 200),
+    records: [
+      {
+        id: uid('rec'),
+        kind: 'finance' as const,
+        title: `Invoice ${saved.number}`,
+        body: `${saved.customerName} · ${saved.item} · ${saved.amount}`.slice(0, 500),
+        staffId,
+        status: 'filed' as const,
+        at: iso(now),
+      },
+      ...(state.records ?? []),
+    ].slice(0, 200),
+  }
+}
+
+function postStaffNote(state: AppState, note: { staffId: string; staffName: string; text: string }, now: number): AppState {
+  if (!state.threads.some((thread) => thread.id === COMPANY_THREAD)) return state
+  const message = chatMessage(now, {
+    threadId: COMPANY_THREAD,
+    authorId: note.staffId,
+    authorName: note.staffName,
+    text: note.text.slice(0, 1200),
+    mentions: [],
+  })
+  return { ...state, chat: [...state.chat, message] }
+}
+
+function salesPerson(state: AppState): { id: string; name: string } | null {
+  const people = state.staff.map((person) => ({
+    id: person.id,
+    name: person.name,
+    roleKey: state.roles.find((role) => role.id === person.roleId)?.key ?? '',
+    active: isStaffActive(state, person),
+  }))
+  return pickStaff(people, ['quote_specialist', 'sales_manager', 'account_executive'])
 }
 
 function scrubOrphanWhatsApp(state: AppState): AppState {

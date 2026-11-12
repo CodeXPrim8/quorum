@@ -14,6 +14,7 @@ export function WhatsAppView({
   const chats = [...(state.whatsapp ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   const selected = chats.find((chat) => chat.id === selectedId) ?? chats[0] ?? null
   const [linked, setLinked] = useState<boolean | null>(null)
+  const [price, setPrice] = useState('')
   const assignee = selected?.assigneeId ? state.staff.find((person) => person.id === selected.assigneeId) : null
   const open = Boolean(selectedId && selected)
 
@@ -35,6 +36,10 @@ export function WhatsAppView({
     }
   }, [chats.length, companyId])
 
+  useEffect(() => {
+    setPrice('')
+  }, [selected?.id])
+
   return (
     <div className={open ? 'wa is-open' : 'wa'}>
       <aside className="wa-list">
@@ -43,7 +48,7 @@ export function WhatsAppView({
         </header>
         <p className="wa-notice">
           {linked
-            ? 'The company line is connected. Quorum answers the client, then hands the work to the right staff agent. No price or payment is sent from this chat.'
+            ? 'The company line is connected. Staff reply as they would to a real customer. A price is sent only after you confirm it, and that price is checked again after two days.'
             : 'Connect this company’s WhatsApp under Integrations, or set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID in .env as a single-tenant fallback. Webhook verify uses WHATSAPP_VERIFY_TOKEN at /api/whatsapp/webhook.'}
         </p>
         <div className="wa-chats">
@@ -61,6 +66,29 @@ export function WhatsAppView({
             </a>
           ))}
         </div>
+        {(state.customers ?? []).length > 0 && (
+          <div className="wa-panel">
+            <strong>Customers</strong>
+            <ul className="plain">
+              {(state.customers ?? []).slice(0, 8).map((customer) => {
+                const invoice = (state.invoices ?? []).find((item) => item.phone === customer.phone)
+                return (
+                  <li key={customer.id}>
+                    <span>
+                      {customer.name}
+                      {customer.company ? ` · ${customer.company}` : ''}
+                    </span>
+                    <small>
+                      {customer.phone}
+                      {customer.email ? ` · ${customer.email}` : ''}
+                      {invoice ? ` · ${invoice.number} ${invoice.amount}` : ''}
+                    </small>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
       </aside>
       <section className="wa-pane" aria-label={selected?.name ?? 'Client chat'}>
         {selected ? (
@@ -89,6 +117,31 @@ export function WhatsAppView({
                 Remove
               </button>
             </header>
+            {selected.sale?.stage === 'awaiting_price' && selected.sale.item && (
+              <form
+                className="wa-panel"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const amount = price.trim()
+                  if (!amount || !selected.sale?.item) return
+                  dispatch({ type: 'CONFIRM_PRICE', item: selected.sale.item, amount, phone: selected.phone })
+                  setPrice('')
+                }}
+              >
+                <p>
+                  {assignee?.name ?? 'Sales'} needs today’s price for the {selected.sale.item} before {selected.name} is told.
+                  {selected.sale.detail ? ` They asked: ${selected.sale.detail}` : ''}
+                </p>
+                <label>
+                  Current price
+                  <input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="450000" inputMode="decimal" />
+                </label>
+                <button type="submit" className="btn btn-primary">
+                  Confirm price
+                </button>
+                <small>Staff can reuse this price for two days. After that they ask you again before sending it.</small>
+              </form>
+            )}
             <div className="wa-stream">
               {selected.messages.map((message) => (
                 <article key={message.id} className={message.author === 'quorum' ? 'wa-bubble mine' : 'wa-bubble'}>

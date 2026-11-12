@@ -6,6 +6,7 @@ import { applyCommand } from '../engine/apply'
 import { bareSample } from '../engine/fixture'
 import { ackInbound, enqueueInbound, inboxFile, parseWebhook, signatureOk, verifyChallenge } from '../../server/whatsapp'
 import { clientLane, clientReply, pickStaff } from './whatsapp'
+import { PRICE_FRESH_MS } from './whatsapp-sales'
 
 describe('client lane', () => {
   it('sends a solar quote to the quote specialist and names them without a price', () => {
@@ -18,8 +19,8 @@ describe('client lane', () => {
     const reply = clientReply('Northline', person, lane.refused)
     expect(person?.id).toBe('lena')
     expect(reply).toContain('Lena Cho')
-    expect(reply).not.toMatch(/£|\$|€|\d+\s?(usd|gbp)/i)
-    expect(reply).toContain('will not send a price')
+    expect(reply).not.toMatch(/₦|£|\$|€/)
+    expect(reply).not.toContain('will not send a price')
   })
 
   it('sends hiring to HR and refuses an attack', () => {
@@ -81,8 +82,58 @@ describe('whatsapp command', () => {
     const task = twice.tasks.find((item) => item.id === chat?.taskId)
     expect(chat?.messages).toHaveLength(2)
     expect(chat?.messages[1]?.status).toBe('held')
+    expect(chat?.messages[1]?.text).toMatch(/confirming today's price/i)
+    expect(chat?.messages[1]?.text).not.toMatch(/₦|£|\$/)
+    expect(chat?.sale?.stage).toBe('awaiting_price')
     expect(task?.assigneeId).toBe('staff_lena')
     expect(task?.playbook[0]?.kind).toBe('work')
     expect(twice.tasks.filter((item) => item.title.startsWith('WhatsApp:'))).toHaveLength(1)
+  })
+
+  it('asks a short question, confirms a price with the owner, then invoices', () => {
+    const now = Date.parse('2026-11-12T02:00:00Z')
+    const ask = (state: ReturnType<typeof bareSample>, id: string, text: string, phone = '2348131074911', at = now) =>
+      applyCommand(
+        state,
+        { type: 'WHATSAPP_INBOUND', phone, name: 'Ada Cole', text, messageId: id, linked: true },
+        at,
+      )
+    let state = ask(bareSample(now), 'wamid.a', 'Do you guys have laptop?')
+    const first = state.whatsapp?.find((item) => item.phone === '2348131074911')?.messages.at(-1)?.text ?? ''
+    expect(first).toMatch(/specification/i)
+    expect(first).not.toMatch(/₦/)
+
+    state = ask(state, 'wamid.b', 'HP 8gb, 2 units', '2348131074911', now + 1)
+    const held = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(held?.sale?.stage).toBe('awaiting_price')
+    expect(held?.messages.at(-1)?.text).toMatch(/confirming today's price/i)
+    expect(held?.messages.at(-1)?.text).not.toMatch(/₦/)
+
+    state = applyCommand(state, { type: 'CONFIRM_PRICE', item: 'laptop', amount: '450000' }, now + 2)
+    const quoted = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(quoted?.messages.at(-1)?.text).toContain('₦450,000')
+    expect(quoted?.messages.at(-1)?.status).toBe('queued')
+    expect(state.prices?.[0]?.amount).toBe('₦450,000')
+
+    state = ask(state, 'wamid.c', 'I need 2 HP laptops, 8gb', '15550002222', now + 3)
+    const second = state.whatsapp?.find((item) => item.phone === '15550002222')
+    expect(second?.messages.at(-1)?.text).toContain('₦450,000')
+    expect(second?.sale?.stage).toBe('quoted')
+
+    const staleAt = now + PRICE_FRESH_MS + 60_000
+    state = ask(state, 'wamid.d', 'I need 2 Dell laptops, 8gb', '15550003333', staleAt)
+    const stale = state.whatsapp?.find((item) => item.phone === '15550003333')
+    expect(stale?.sale?.stage).toBe('awaiting_price')
+    expect(stale?.messages.at(-1)?.text).not.toContain('₦450,000')
+
+    state = ask(state, 'wamid.e', 'Yes, I will take it', '2348131074911', now + 4)
+    expect(state.whatsapp?.find((item) => item.phone === '2348131074911')?.sale?.stage).toBe('details')
+
+    state = ask(state, 'wamid.f', 'Ada Cole, ada@example.com, 12 Allen Avenue Lagos', '2348131074911', now + 5)
+    const done = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(done?.sale?.stage).toBe('invoiced')
+    expect(done?.messages.at(-1)?.text).toContain('QSI-20261112-4911')
+    expect(state.customers?.some((item) => item.phone === '2348131074911' && item.email === 'ada@example.com')).toBe(true)
+    expect(state.invoices?.[0]?.amount).toBe('₦450,000')
   })
 })

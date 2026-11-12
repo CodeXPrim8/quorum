@@ -303,6 +303,17 @@ export type WaAuthor = 'client' | 'quorum'
 
 export type WaDelivery = 'received' | 'queued' | 'held' | 'sent' | 'failed'
 
+/** Where a WhatsApp sale stands. A price is not sent until it is confirmed. */
+export type WaSaleStage = 'open' | 'qualifying' | 'awaiting_price' | 'quoted' | 'details' | 'invoiced'
+
+export type WaSale = {
+  item?: string
+  detail?: string
+  stage: WaSaleStage
+  priceAmount?: string
+  invoiceNumber?: string
+}
+
 /** One company WhatsApp thread. The phone is the client's WhatsApp id. */
 export type WaChat = {
   id: string
@@ -312,6 +323,43 @@ export type WaChat = {
   assigneeId: string | null
   taskId: string | null
   updatedAt: string
+  /** What this client is buying, and whether a price is waiting on the owner. */
+  sale?: WaSale
+  /** True when the company line can deliver the reply. */
+  linked?: boolean
+}
+
+/** A price the owner confirmed. Staff may repeat it for two days, then they ask again. */
+export type PriceEntry = {
+  id: string
+  item: string
+  amount: string
+  confirmedAt: string
+}
+
+/** A person who has written on the company WhatsApp line and given details for an invoice. */
+export type Customer = {
+  id: string
+  name: string
+  phone: string
+  email?: string
+  address?: string
+  company?: string
+  item?: string
+  updatedAt: string
+}
+
+/** An invoice prepared after the customer accepts a confirmed price. */
+export type CustomerInvoice = {
+  id: string
+  number: string
+  customerId: string
+  phone: string
+  customerName: string
+  item: string
+  detail?: string
+  amount: string
+  at: string
 }
 
 export type WaMessage = {
@@ -580,6 +628,12 @@ export type AppState = {
   records: CompanyRecord[]
   /** Client chats on the company WhatsApp line. Missing on older saves. */
   whatsapp?: WaChat[]
+  /** Prices the owner confirmed for WhatsApp quotes. Missing on older saves. */
+  prices?: PriceEntry[]
+  /** Customers saved from WhatsApp for invoices. Missing on older saves. */
+  customers?: Customer[]
+  /** Invoices issued after a customer accepts a price. Missing on older saves. */
+  invoices?: CustomerInvoice[]
   /** Goals the MD proposed. They are not live until you approve them. */
   goalProposals: GoalProposal[]
   /** Lessons the company keeps: owner instructions, decisions, and what the site said. */
@@ -727,6 +781,7 @@ export type Command =
   | { type: 'WHATSAPP_INBOUND'; phone: string; name: string; text: string; messageId: string; linked: boolean }
   | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sent' | 'held' | 'failed' }
   | { type: 'WHATSAPP_DROP'; phone: string }
+  | { type: 'CONFIRM_PRICE'; item: string; amount: string; phone?: string }
   | { type: 'INSTAGRAM_RESULT'; designId: string; status: 'published' | 'failed'; error?: string; mediaId?: string }
 
 export type OrgNode = {

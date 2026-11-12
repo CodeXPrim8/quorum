@@ -66,7 +66,7 @@ export function integrationRegistry(): Integration[] {
       category: 'Messages',
       status: 'in_app',
       summary:
-        'A client messages this company’s WhatsApp Cloud API number. Quorum replies and files the request with the staff agent for that work. Nothing is priced or paid from the chat. Each company connects its own line — not a shared personal account.',
+        'A client messages this company’s WhatsApp Cloud API number. The assigned staff member replies in a normal sales conversation. A price is sent only after you confirm it, and a price older than two days is checked with you again. Each company connects its own line.',
       connectionPoint:
         'Integrations → Company WhatsApp: paste this company’s Cloud API token and phone number id. Or set WHATSAPP_* in .env for a single-tenant fallback. Webhook: public https + /api/whatsapp/webhook with WHATSAPP_VERIFY_TOKEN.',
       usedBy: 'Quorum, then the staff agent for the request',

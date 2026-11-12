@@ -35,9 +35,9 @@ export function pickStaff<T extends { roleKey: string; active: boolean }>(people
   return null
 }
 
-/** What the client sees. No price and no payment. */
+/** A short reply when the conversation planner is not used. */
 export function clientReply(company: string, person: { name: string; title: string } | null, refused: boolean): string {
   if (refused) return `${company} only handles requests for this company. I can’t help with breaking into anything.`
-  if (!person) return `Hello. This is ${company}. I have your message. No one is on that desk right now, so I have kept it for the owner.`
-  return `Hello. This is ${company}. I have your message and I have given it to ${person.name}, ${person.title}. They will handle it. I will not send a price or a payment from this chat.`
+  if (!person) return `Hello, this is ${company}. Thank you for writing. I have kept your message for the owner.`
+  return `Hello, this is ${person.name} from ${company}. How can I help you today?`
 }

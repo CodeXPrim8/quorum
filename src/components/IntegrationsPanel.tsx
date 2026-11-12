@@ -15,7 +15,7 @@ const LINES: Record<string, string> = {
   catalog: 'Products and the facts staff are allowed to repeat.',
   crm: 'Lead and account notes for Sales.',
   email: 'Approved mail stays in the Quorum outbox.',
-  whatsapp: 'Each company connects its own WhatsApp Cloud API line. Quorum replies and hands the work to staff.',
+  whatsapp: 'Each company connects its own WhatsApp line. Staff reply to the customer. A price is sent only after you confirm it.',
   content_calendar: 'A month of posts, sizes, and captions.',
   graphics: 'Promotional graphics and in-house flyers.',
   social: 'Each company connects its own Instagram Business account. Approved posts go live on that account.',
