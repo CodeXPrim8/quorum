@@ -1,3 +1,4 @@
+import { chatComplete } from './model-chat.js'
 import type { WaEnv, WaInbound } from './whatsapp.js'
 import { sendWhatsAppText } from './whatsapp.js'
 import {
@@ -11,7 +12,6 @@ import {
 } from './whatsapp-log.js'
 
 const RETIRED = /I will not send a price/i
-let skipGpt41 = false
 
 export async function saveSalesContext(context: SalesContext): Promise<void> {
   const log = await readWhatsAppLog()
@@ -100,7 +100,7 @@ async function draftReply(context: SalesContext | undefined, chat: LogChat, text
   const sale = nextSale(chat.sale, text)
   const history = chat.messages.slice(-12).map((message) => ({ author: message.author, text: message.text }))
   const allowed = allowedPrices(context, sale.item)
-  const spoken = await speak(company, staffName, text, history, allowed)
+  const spoken = await speak(context, staffName, text, history, allowed)
   const safe = spoken && !inventedPrice(spoken, allowed) ? spoken : humanFallback(company, staffName, text, sale, allowed)
   return { text: safe, sale }
 }
@@ -146,12 +146,13 @@ function mentionedItem(text: string): string {
 }
 
 async function speak(
-  company: string,
+  context: SalesContext | undefined,
   staffName: string,
   latest: string,
   history: { author: string; text: string }[],
   allowed: { amount: string; floor?: string }[],
 ): Promise<string> {
+  const company = context?.company || 'the company'
   const transcript = history
     .slice(-10)
     .map((message) => `${message.author === 'client' ? 'Customer' : 'You'}: ${message.text}`)
@@ -159,51 +160,30 @@ async function speak(
   const priceList = allowed.length
     ? allowed.map((price) => `opening ${price.amount}${price.floor ? `, lowest ${price.floor}` : ''}`).join('; ')
     : 'none yet'
+  const catalog = (context?.products ?? []).map((product) => `${product.name}: ${product.fact}`).join('\n') || 'not listed yet'
+  const goals = (context?.goals ?? []).filter(Boolean).join('; ') || 'win and keep customers'
   const system = [
     `You are ${staffName}, a salesperson at ${company}.`,
-    `${company} is a technology company. It sells products and services such as laptops, phones, Starlink, solar, networking, printers, and repairs.`,
+    `The company is: ${context?.business || company}.`,
+    `What it is trying to grow: ${goals}.`,
+    `Products and services already on file:\n${catalog}`,
+    'Your job is to help this company grow by attending to the customer the way a sharp salesperson would.',
     'Reply on WhatsApp in clear, friendly English. Two to four short sentences. You understand Nigerian Pidgin.',
-    'Answer the question they actually asked. If they ask whether you sell or deal on a product, say yes, then ask the useful next questions.',
+    'Answer the question they actually asked. If they ask whether the company sells or deals on something in its line of business, say yes, then ask the useful next questions.',
     'For Starlink, ask their location and which kit they want: Gen 2, Gen 3, High Performance, or Mini.',
     'For a laptop, ask what the work is and whether they have a specification. If they want a recommendation for ordinary work, suggest a straightforward HP or Dell with 16GB RAM and 256GB storage.',
     `Confirmed prices you may quote: ${priceList}.`,
-    'Do not invent a naira price. If no price is confirmed for what they want, do not mention money. Learn what they need first.',
+    'Do not invent a naira price. If no price is confirmed for what they want, do not mention money. Understand the need first.',
     'Do not say you are an AI. Do not say you will not guess a figure. Do not hand the chat to someone else.',
-  ].join(' ')
-  const user = `Latest customer message:\n${latest}\n\nConversation so far:\n${transcript || latest}`
-  const openai = String(process.env.OPENAI_API_KEY ?? '').trim()
-  const deepseek = String(process.env.DEEPSEEK_API_KEY ?? '').trim()
-  const deepseekModel = String(process.env.DEEPSEEK_MODEL ?? 'deepseek-chat').trim() || 'deepseek-chat'
-  const attempts: { url: string; key: string; model: string }[] = []
-  if (openai && !skipGpt41) attempts.push({ url: 'https://api.openai.com/v1/chat/completions', key: openai, model: 'gpt-4.1' })
-  if (openai) attempts.push({ url: 'https://api.openai.com/v1/chat/completions', key: openai, model: 'gpt-4o' })
-  if (deepseek) attempts.push({ url: 'https://api.deepseek.com/v1/chat/completions', key: deepseek, model: deepseekModel })
-  for (const attempt of attempts) {
-    try {
-      const response = await fetch(attempt.url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${attempt.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: attempt.model,
-          temperature: 0.7,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        }),
-      })
-      if (response.status === 404 && attempt.model === 'gpt-4.1') {
-        skipGpt41 = true
-        continue
-      }
-      if (!response.ok) continue
-      const data = (await response.json()) as { choices?: { message?: { content?: string } }[] }
-      const next = String(data.choices?.[0]?.message?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 700)
-      if (next && !RETIRED.test(next) && !/will not guess a figure/i.test(next) && !inventedPrice(next, allowed)) return next
-    } catch {
-      /* Try the next model. */
-    }
-  }
+  ].join('\n')
+  const next = await chatComplete(
+    [
+      { role: 'system', content: system },
+      { role: 'user', content: `Latest customer message:\n${latest}\n\nConversation so far:\n${transcript || latest}` },
+    ],
+    0.7,
+  )
+  if (next && !RETIRED.test(next) && !/will not guess a figure/i.test(next) && !inventedPrice(next, allowed)) return next.slice(0, 700)
   return ''
 }
 

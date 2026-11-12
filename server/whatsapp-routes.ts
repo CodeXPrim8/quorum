@@ -151,6 +151,8 @@ export async function serveWhatsApp(req: IncomingMessage, res: ServerResponse, p
       await saveSalesContext({
         companyId: body.companyId,
         company: body.company,
+        business: body.business,
+        goals: Array.isArray(body.goals) ? body.goals.slice(0, 8) : [],
         handler: body.handler ?? null,
         sales: body.sales ?? null,
         prices: Array.isArray(body.prices) ? body.prices.slice(-30) : [],

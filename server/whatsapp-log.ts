@@ -40,6 +40,9 @@ export type LogChat = {
 export type SalesContext = {
   companyId?: string
   company: string
+  /** What this company does, in the owner's words. */
+  business?: string
+  goals?: string[]
   handler: { id: string; name: string; title: string } | null
   sales: { id: string; name: string; title: string } | null
   prices: { id: string; item: string; amount: string; floor?: string; confirmedAt: string }[]

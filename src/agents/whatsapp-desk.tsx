@@ -30,6 +30,8 @@ function salesContext(state: AppState) {
   return {
     companyId: state.company?.id,
     company: state.company?.name ?? 'the company',
+    business: state.company?.businessType,
+    goals: (state.company?.goals ?? []).map((goal) => goal.text).slice(0, 8),
     handler: person(['account_executive', 'sales_manager', 'quote_specialist']),
     sales: person(['quote_specialist', 'sales_manager', 'account_executive']),
     prices: (state.prices ?? []).slice(-30),
