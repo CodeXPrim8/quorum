@@ -118,7 +118,7 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
         <label className="check">
           <input
             type="checkbox"
-            checked={state.settings.realTime === true}
+            checked={state.settings.realTime !== false}
             onChange={(event) => dispatch({ type: 'SET_REAL_TIME', value: event.target.checked })}
           />
           Use my local time

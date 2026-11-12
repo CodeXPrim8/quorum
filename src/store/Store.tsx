@@ -84,6 +84,7 @@ function hydrate(parsed: AppState, now: number): AppState {
       invoices: parsed.invoices ?? [],
       calls: parsed.calls ?? [],
       goalProposals: parsed.goalProposals ?? [],
+      settings: { ...parsed.settings, realTime: parsed.settings.realTime !== false, reportCadence: parsed.settings.reportCadence ?? 'monthly' },
       clock: parsed.clock
         ? {
             ...parsed.clock,

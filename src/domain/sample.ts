@@ -57,7 +57,7 @@ export function blankState(reducedMotion = false): AppState {
     approvals: [],
     integrations: integrationRegistry(),
     desktop: { agentConnected: false, sessionActive: false, mode: null },
-    settings: { reducedMotion, engineRunning: false, showFloor: true, agentsWorking: true },
+    settings: { reducedMotion, engineRunning: false, showFloor: true, agentsWorking: true, realTime: true, reportCadence: 'monthly' },
     clock: freshClock(0),
     threads: [],
     chat: [],

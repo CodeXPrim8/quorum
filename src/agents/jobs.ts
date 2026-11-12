@@ -198,6 +198,7 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
       if (task.status !== 'in_progress' || !task.assigneeId || task.handoff) return false
       const step = currentStep(task)
       if (step?.kind !== 'work') return false
+      if (task.title.startsWith('WhatsApp:')) return false
       return isStaffIdActive(state, task.assigneeId)
     })
     .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || (a.stepStartedAt ?? 0) - (b.stepStartedAt ?? 0))[0]

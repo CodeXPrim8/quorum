@@ -108,6 +108,8 @@ describe('whatsapp command', () => {
     expect(held?.sale?.stage).toBe('awaiting_price')
     expect(held?.messages.at(-1)?.text).toMatch(/confirming today's price/i)
     expect(held?.messages.at(-1)?.text).not.toMatch(/₦/)
+    expect(state.attention?.spoken).toMatch(/Hello sir, your attention is needed/i)
+    expect(state.chat.some((message) => message.threadId === state.attention?.threadId && message.text.includes('2348131074911'))).toBe(true)
 
     state = applyCommand(state, { type: 'CONFIRM_PRICE', item: 'laptop', amount: '450000' }, now + 2)
     const quoted = state.whatsapp?.find((item) => item.phone === '2348131074911')

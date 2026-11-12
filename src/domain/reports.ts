@@ -2,7 +2,7 @@ import { isStaffActive } from './active'
 import type { AppState, ReportCadence, Staff, StaffReport } from '../types'
 
 export function reportCadence(state: AppState): ReportCadence {
-  return state.settings.reportCadence ?? 'daily'
+  return state.settings.reportCadence ?? 'monthly'
 }
 
 /** True when managers should send you the compiled report at the close of this office day. */

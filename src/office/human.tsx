@@ -38,6 +38,7 @@ export function Human({ state, person, now, dim, onOpen }: Props) {
     const onCall = person.presence.pose === 'call'
     const sit = !walking && (person.presence.pose === 'sit' || onCall)
     const drink = !walking && person.presence.pose === 'drink'
+    const attention = !walking && person.presence.pose === 'attention'
     root.position.y = sit ? -0.22 : 0
     if (walking && person.presence.path.length > 1) {
       const ahead = positionAt(person.presence, Date.now() + 180)
@@ -64,7 +65,17 @@ export function Human({ state, person, now, dim, onOpen }: Props) {
       const eating = sit && cafeSeats.some((item) => item.x === person.presence.x && item.y === person.presence.y)
       const lounging = sit && breakSeat && !eating
       if (leftArm.current && rightArm.current) {
-        if (eating) {
+        leftArm.current.rotation.z = 0
+        rightArm.current.rotation.z = 0
+        if (attention) {
+          const wave = Math.sin(Date.now() / 160) * 0.28
+          leftArm.current.position.set(-0.16, 1.46, 0.02)
+          rightArm.current.position.set(0.16, 1.46, 0.02)
+          leftArm.current.rotation.x = -2.65 + wave
+          rightArm.current.rotation.x = -2.65 - wave
+          leftArm.current.rotation.z = 0.35
+          rightArm.current.rotation.z = -0.35
+        } else if (eating) {
           const bite = Math.sin(Date.now() / 420) * 0.28
           leftArm.current.position.set(-0.13, 1.1, 0.14)
           rightArm.current.position.set(0.13, 1.12, 0.16)

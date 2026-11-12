@@ -20,6 +20,7 @@ import { WhatsAppDesk } from './agents/whatsapp-desk'
 import { WhatsAppView } from './components/WhatsAppView'
 import { CallPrompt, Calls } from './components/Calls'
 import { OfficeView } from './office/OfficeView'
+import { AttentionBell } from './components/AttentionBell'
 import { useStore } from './store/Store'
 import { isStaffActive } from './domain/active'
 import type { ReactNode } from 'react'
@@ -150,6 +151,7 @@ export function App() {
       <AgentDesk state={state} dispatch={dispatch} />
       <WhatsAppDesk state={state} dispatch={dispatch} />
       <CallPrompt state={state} dispatch={dispatch} />
+      <AttentionBell cue={state.attention} />
       <InstagramDesk state={state} dispatch={dispatch} />
       {content}
       {call && (

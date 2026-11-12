@@ -20,7 +20,7 @@ export function OfficeView({ state, dispatch, onOpenStaff, onOpenTask }: Props) 
   const reduced = state.settings.reducedMotion
   const showFloor = state.settings.showFloor
   const activeStaff = state.staff.filter((person) => isStaffActive(state, person))
-  const someoneMoving = activeStaff.some((person) => person.presence.movingUntil > Date.now() || person.presence.pose === 'drink')
+  const someoneMoving = activeStaff.some((person) => person.presence.movingUntil > Date.now() || person.presence.pose === 'drink' || person.presence.pose === 'attention')
   const open = clockOpen(state.clock)
 
   useEffect(() => {

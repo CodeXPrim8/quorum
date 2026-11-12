@@ -1,4 +1,5 @@
 import type { PriceEntry, Product, WaMessage, WaSale, WaSaleStage } from '../types'
+import { quoteLines, requestLines } from './price-lines'
 
 /** A confirmed price may be sent for two days. After that, staff ask the owner again. */
 export const PRICE_FRESH_MS = 2 * 24 * 60 * 60 * 1000
@@ -125,6 +126,30 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
 
   if (sale.stage === 'details') {
     return finishDetails(input, sale, handler, text)
+  }
+
+  const lines = requestLines([...input.history, { author: 'client', text }])
+  if (lines.length > 1 && !(sale.stage === 'quoted' && agrees(text))) {
+    const priced = lines.map((item) => ({ item, price: latestPrice(input.prices, item) })).filter((line) => line.price && priceIsFresh(line.price.confirmedAt, input.now))
+    const detail = lines.join('; ').slice(0, 240)
+    if (priced.length === lines.length) {
+      return {
+        reply: introduce(handler, input.company, input.history, quoteLines(priced.map((line) => ({ item: line.item, amount: line.price?.amount ?? '' })))),
+        sale: { ...sale, item: lines[0], detail, stage: 'quoted', priceAmount: priced[0]?.price?.amount },
+        notes: [],
+      }
+    }
+    const who = sales ?? handler
+    return {
+      reply: introduce(
+        handler,
+        input.company,
+        input.history,
+        `Please hold on while I confirm the price. I have ${lines.join(', ')}. I will send each figure in this chat as soon as it is confirmed.`,
+      ),
+      sale: { ...sale, item: lines[0], detail, stage: 'awaiting_price', priceAmount: undefined },
+      notes: sale.stage === 'awaiting_price' ? [] : notesForMissingPrice(handler, who, input.profileName, lines[0], detail, ''),
+    }
   }
 
   if (sale.stage === 'quoted' && agrees(text) && !differentItem(text, sale.item)) {

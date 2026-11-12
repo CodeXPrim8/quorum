@@ -1,4 +1,4 @@
-import { chatComplete } from './model-chat.js'
+import { quoteLines, requestLines } from './price-lines.js'
 import type { WaEnv, WaInbound } from './whatsapp.js'
 import { sendWhatsAppText } from './whatsapp.js'
 import {
@@ -97,24 +97,52 @@ export async function sendIsDuplicate(phone: string, text: string, inReplyTo?: s
 async function draftReply(context: SalesContext | undefined, chat: LogChat, text: string): Promise<{ text: string; sale: LogChat['sale']; effect?: LogEffect }> {
   const company = context?.company || 'the company'
   const staffName = context?.handler?.name || company
-  const sale = nextSale(chat.sale, text)
   const history = chat.messages.slice(-12).map((message) => ({ author: message.author, text: message.text }))
-  const allowed = allowedPrices(context, sale.item)
-  const spoken = await speak(context, staffName, text, history, allowed)
-  const safe = spoken && !inventedPrice(spoken, allowed) ? spoken : humanFallback(company, staffName, text, sale, allowed)
+  const lines = requestLines([...history, { author: 'client', text }])
+  const sale = nextSale(chat.sale, text, lines)
+  const quoted = lines
+    .map((item) => ({ item, price: allowedPrices(context, item).at(-1) }))
+    .filter((line) => line.price)
+  const missing = lines.filter((item) => !quoted.some((line) => line.item === item))
+  const holding = needsQuote(lines) && missing.length > 0
+  const alreadyPriced = chat.sale?.stage === 'quoted' || chat.sale?.stage === 'details' || chat.sale?.stage === 'invoiced'
+  if (needsQuote(lines) && missing.length === 0 && !alreadyPriced) {
+    return {
+      text: quoteLines(quoted.map((line) => ({ item: line.item, amount: line.price?.amount ?? '' }))),
+      sale: { ...sale, stage: 'quoted', priceAmount: quoted[0]?.price?.amount, detail: lines.join('; ').slice(0, 240) },
+    }
+  }
+  const allowed = needsQuote(lines) ? quoted.flatMap((line) => (line.price ? [line.price] : [])) : allowedPrices(context, sale.item)
+  const spoken = await speak(context, staffName, text, history, allowed, holding ? lines : [])
+  const safeText = spoken && !inventedPrice(spoken, allowed) ? spoken : ''
+  const withHold = holding && safeText && !/hold on while I confirm the price/i.test(safeText)
+    ? `Please hold on while I confirm the price. ${safeText}`
+    : safeText
+  const safe = withHold || humanFallback(company, staffName, text, sale, allowed, holding ? lines : [])
   return { text: safe, sale }
 }
 
-function nextSale(current: LogChat['sale'], text: string): NonNullable<LogChat['sale']> {
+function nextSale(current: LogChat['sale'], text: string, lines: string[]): NonNullable<LogChat['sale']> {
   const sale = current ?? { stage: 'open' }
-  const item = mentionedItem(text) || sale.item
+  const item = lines[0] || mentionedItem(text) || sale.item
+  const holding = needsQuote(lines)
   if (!item) return sale
-  return { ...sale, item, stage: sale.stage === 'open' ? 'qualifying' : sale.stage }
+  const settled = sale.stage === 'quoted' || sale.stage === 'details' || sale.stage === 'invoiced' || sale.stage === 'calling'
+  const stage = holding && !settled ? 'awaiting_price' : sale.stage === 'open' ? 'qualifying' : sale.stage
+  return { ...sale, item, detail: holding ? lines.join('; ').slice(0, 240) : sale.detail, stage }
+}
+
+function needsQuote(lines: string[]): boolean {
+  return lines.length > 1
 }
 
 function allowedPrices(context: SalesContext | undefined, item: string | undefined) {
   if (!item) return []
-  return (context?.prices ?? []).filter((price) => price.item.toLowerCase() === item || item.includes(price.item.toLowerCase()))
+  const name = item.toLowerCase()
+  return (context?.prices ?? []).filter((price) => {
+    const saved = price.item.toLowerCase()
+    return saved === name || name.includes(saved)
+  })
 }
 
 function humanFallback(
@@ -123,8 +151,12 @@ function humanFallback(
   text: string,
   sale: NonNullable<LogChat['sale']>,
   allowed: { amount: string; floor?: string }[],
+  lines: string[] = [],
 ): string {
   const price = allowed.at(-1)
+  if (lines.length > 0) {
+    return `Please hold on while I confirm the price. I have ${lines.join(', ')}. I will send each figure in this chat as soon as it is confirmed.`
+  }
   if (/^(are you there|you there|hello|hi|hey)\b/i.test(text.trim()) && price) {
     return `Yes, I am here. The price is still ${price.amount}. Tell me if you want to go ahead.`
   }
@@ -151,6 +183,7 @@ async function speak(
   latest: string,
   history: { author: string; text: string }[],
   allowed: { amount: string; floor?: string }[],
+  holding: string[] = [],
 ): Promise<string> {
   const company = context?.company || 'the company'
   const transcript = history
@@ -162,10 +195,12 @@ async function speak(
     : 'none yet'
   const catalog = (context?.products ?? []).map((product) => `${product.name}: ${product.fact}`).join('\n') || 'not listed yet'
   const goals = (context?.goals ?? []).filter(Boolean).join('; ') || 'win and keep customers'
+  const learned = (context?.learned ?? []).filter(Boolean).slice(0, 8).join('\n') || 'nothing saved yet'
   const system = [
     `You are ${staffName}, a salesperson at ${company}.`,
     `The company is: ${context?.business || company}.`,
     `What it is trying to grow: ${goals}.`,
+    `What the owner has already taught. Follow it:\n${learned}`,
     `Products and services already on file:\n${catalog}`,
     'Your job is to help this company grow by attending to the customer the way a sharp salesperson would.',
     'Reply on WhatsApp in clear, friendly English. Two to four short sentences. You understand Nigerian Pidgin.',
@@ -173,7 +208,9 @@ async function speak(
     'For Starlink, ask their location and which kit they want: Gen 2, Gen 3, High Performance, or Mini.',
     'For a laptop, ask what the work is and whether they have a specification. If they want a recommendation for ordinary work, suggest a straightforward HP or Dell with 16GB RAM and 256GB storage.',
     `Confirmed prices you may quote: ${priceList}.`,
-    'Do not invent a naira price. If no price is confirmed for what they want, do not mention money. Understand the need first.',
+    holding.length > 0
+      ? `The customer already gave enough to price: ${holding.join('; ')}. You do not have a confirmed price for every line yet. Start with "Please hold on while I confirm the price." Then keep a warm conversation for one or two sentences. Acknowledge what they just said. Do not ask again for a detail they already gave. Do not mention money.`
+      : 'Do not invent a naira price. If no price is confirmed for what they want, do not mention money. Understand the need first.',
     'Do not say you are an AI. Do not say you will not guess a figure. Do not hand the chat to someone else.',
   ].join('\n')
   const next = await chatComplete(

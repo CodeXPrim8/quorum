@@ -7,7 +7,7 @@ const now = 1_700_000_000_000
 describe('line reports', () => {
   it('defaults to a daily compiled report for the owner', () => {
     const state = createSampleState(now)
-    expect(reportCadence(state)).toBe('daily')
+    expect(reportCadence(state)).toBe('monthly')
     expect(ownerReportDue('daily', -1, 5)).toBe(true)
     expect(ownerReportDue('weekly', 5, 6)).toBe(false)
     expect(ownerReportDue('weekly', 5, 10)).toBe(true)

@@ -18,6 +18,7 @@ export function activityLabel(state: AppState, person: Staff, now: number): stri
   if (now < person.presence.movingUntil) return `Walking · ${person.presence.label}`
   if (person.presence.pose === 'call' || person.presence.label === 'On a call') return 'On a call'
   if (person.presence.pose === 'drink') return 'Getting water'
+  if (person.presence.pose === 'attention') return 'Calling you'
   if (person.presence.lifeIntent === 'chat') return 'Talking with a colleague'
   if (person.presence.lifeIntent === 'errand') return person.presence.label
   if (person.presence.mode === 'meeting') return 'In a meeting'

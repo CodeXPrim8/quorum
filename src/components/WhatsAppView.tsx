@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppState, Command } from '../types'
+import { requestLines } from '../domain/price-lines'
 import { formatWhen } from '../lib/format'
+
+type PriceRow = { item: string; amount: string; floor: string }
 
 export function WhatsAppView({
   state,
@@ -14,12 +17,13 @@ export function WhatsAppView({
   const chats = [...(state.whatsapp ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   const selected = chats.find((chat) => chat.id === selectedId) ?? chats[0] ?? null
   const [linked, setLinked] = useState<boolean | null>(null)
-  const [price, setPrice] = useState('')
-  const [floor, setFloor] = useState('')
+  const [rows, setRows] = useState<PriceRow[]>([{ item: '', amount: '', floor: '' }])
+  const chatRef = useRef('')
   const assignee = selected?.assigneeId ? state.staff.find((person) => person.id === selected.assigneeId) : null
   const open = Boolean(selectedId && selected)
 
   const companyId = state.company?.id
+  const foundKey = requestLines(selected?.messages ?? []).join('|')
 
   useEffect(() => {
     let stop = false
@@ -38,9 +42,39 @@ export function WhatsAppView({
   }, [chats.length, companyId])
 
   useEffect(() => {
-    setPrice('')
-    setFloor('')
-  }, [selected?.id])
+    if (!selected) return
+    const found = foundKey ? foundKey.split('|') : []
+    const prices = state.prices ?? []
+    const switched = chatRef.current !== selected.id
+    chatRef.current = selected.id
+    setRows((current) => {
+      const base = switched ? [] : current
+      const items = found.length ? found : ['']
+      const next = items.map((item) => {
+        const kept = base.find((row) => row.item.toLowerCase() === item.toLowerCase())
+        if (kept) return kept
+        const saved = [...prices].reverse().find((price) => price.item.toLowerCase() === item.toLowerCase())
+        return {
+          item,
+          amount: saved ? saved.amount.replace(/[^\d.]/g, '') : '',
+          floor: saved?.floor ? saved.floor.replace(/[^\d.]/g, '') : '',
+        }
+      })
+      const extras = base.filter((row) => !items.some((item) => item.toLowerCase() === row.item.toLowerCase()))
+      const merged = [...next, ...extras]
+      if (
+        merged.length === current.length &&
+        merged.every((row, index) => row.item === current[index]?.item && row.amount === current[index]?.amount && row.floor === current[index]?.floor)
+      ) {
+        return current
+      }
+      return merged
+    })
+  }, [selected, foundKey, state.prices])
+
+  function updateRow(index: number, patch: Partial<PriceRow>) {
+    setRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)))
+  }
 
   return (
     <div className={open ? 'wa is-open' : 'wa'}>
@@ -118,7 +152,6 @@ export function WhatsAppView({
                 <p>
                   {selected.phone}
                   {assignee ? ` · ${assignee.name}, ${assignee.title}` : ''}
-                  {selected.taskId ? '' : ''}
                 </p>
               </div>
               {selected.taskId && (
@@ -130,36 +163,46 @@ export function WhatsAppView({
                 Remove
               </button>
             </header>
-            {selected.sale?.stage === 'awaiting_price' && selected.sale.item && (
-              <form
-                className="wa-panel"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  const amount = price.trim()
-                  if (!amount || !selected.sale?.item) return
-                  dispatch({ type: 'CONFIRM_PRICE', item: selected.sale.item, amount, floor: floor.trim() || undefined, phone: selected.phone })
-                  setPrice('')
-                  setFloor('')
-                }}
-              >
-                <p>
-                  {assignee?.name ?? 'Sales'} needs today’s price for the {selected.sale.item} before {selected.name} is told.
-                  {selected.sale.detail ? ` Need: ${selected.sale.detail}` : ''} The customer hears the opening price. The agent can come down to the lowest price and no further.
-                </p>
-                <label>
-                  Opening price
-                  <input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="1000000" inputMode="decimal" />
-                </label>
-                <label>
-                  Lowest price
-                  <input value={floor} onChange={(event) => setFloor(event.target.value)} placeholder="950000" inputMode="decimal" />
-                </label>
-                <button type="submit" className="btn btn-primary">
-                  Confirm price
+            <form
+              className="wa-panel"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const lines = rows
+                  .map((row) => ({ item: row.item.trim(), amount: row.amount.trim(), floor: row.floor.trim() || undefined }))
+                  .filter((row) => row.item && row.amount)
+                if (lines.length === 0) return
+                dispatch({ type: 'CONFIRM_PRICES', phone: selected.phone, lines })
+              }}
+            >
+              <p>
+                Set a price for each thing while {assignee?.name ?? 'the agent'} keeps talking to {selected.name}. The customer hears the opening price. The agent can come down to the lowest price and no further.
+              </p>
+              {rows.map((row, index) => (
+                <div className="wa-price-line" key={`${selected.id}-${index}`}>
+                  <label>
+                    {index === 0 ? 'Item' : <span className="sr">Item</span>}
+                    <input value={row.item} onChange={(event) => updateRow(index, { item: event.target.value })} placeholder="Item" />
+                  </label>
+                  <label>
+                    {index === 0 ? 'Opening price' : <span className="sr">Opening price</span>}
+                    <input value={row.amount} onChange={(event) => updateRow(index, { amount: event.target.value })} placeholder="Opening price" inputMode="decimal" />
+                  </label>
+                  <label>
+                    {index === 0 ? 'Lowest price' : <span className="sr">Lowest price</span>}
+                    <input value={row.floor} onChange={(event) => updateRow(index, { floor: event.target.value })} placeholder="Lowest price" inputMode="decimal" />
+                  </label>
+                </div>
+              ))}
+              <span className="button-row">
+                <button type="button" className="btn" onClick={() => setRows((current) => [...current, { item: '', amount: '', floor: '' }])}>
+                  Add a line
                 </button>
-                <small>Staff can reuse this price for two days. After that they ask you again before sending it.</small>
-              </form>
-            )}
+                <button type="submit" className="btn btn-primary">
+                  Send these prices
+                </button>
+              </span>
+              <small>This stays open. Empty prices stay blank until you fill them. Saving sends only the lines that have a price, and Quorum remembers them.</small>
+            </form>
             <div className="wa-stream">
               {selected.messages.map((message) => (
                 <article key={message.id} className={message.author === 'quorum' ? 'wa-bubble mine' : 'wa-bubble'}>

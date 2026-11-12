@@ -24,7 +24,7 @@ export function lessonFromOwner(text: string): string | null {
   if (body.length < 12) return null
   if (/^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|good morning|good afternoon)\b/i.test(body)) return null
   if (
-    /\b(remember|from now on|we (are|sell|serve|build|offer|don'?t|do not)|our (customers|clients|buyers|product|products|company|site|website)|never |always |actually|correction|call us)\b/i.test(
+    /\b(remember|from now on|we (are|sell|serve|build|offer|charge|don'?t|do not)|our (customers|clients|buyers|product|products|company|site|website|price)|never |always |actually|correction|call us|opening price|lowest price|do not go below|don't go below)\b/i.test(
       body,
     )
   ) {

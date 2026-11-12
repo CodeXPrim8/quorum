@@ -209,6 +209,14 @@ export function advanceLife(state: AppState, now: number): AppState {
       next = patchPerson(next, { ...person, presence })
       continue
     }
+    if (!walking && person.presence.pose === 'attention') {
+      if (now < person.presence.dwellUntil) continue
+      next = patchPerson(next, {
+        ...person,
+        presence: { ...person.presence, pose: 'sit', mode: 'desk', label: 'At desk', lifeIntent: 'none', dwellUntil: now },
+      })
+      continue
+    }
     if (committed(next, person, now) || walking) continue
     const due = clock.minute >= clock.openMinute + person.life.commute
     const inbound = next.staff.filter((item) => item.presence.lifeIntent === 'arrive' && item.presence.movingUntil > now).length
@@ -242,9 +250,20 @@ export function advanceLife(state: AppState, now: number): AppState {
       next = note(next, person, how, now)
       continue
     }
+    const held = (person.life.overtimeUntil ?? 0) > now
+    if (held && person.presence.pose === 'away' && person.presence.lifeIntent !== 'arrive') {
+      const start = commuteStart(next.staff.indexOf(person), person.life.ride)
+      const from = { ...person.presence, x: start.x, y: start.y, originX: start.x, originY: start.y, path: [start] }
+      const arriveAt = arrivalTime(from, { x: person.deskX, y: person.deskY }, now, next.settings.reducedMotion)
+      next = patchPerson(next, {
+        ...person,
+        presence: walkingPresence(from, { x: person.deskX, y: person.deskY }, 'their desk', now, arriveAt, 'desk', null, 'sit', 'arrive', next.settings.reducedMotion),
+      })
+      continue
+    }
     const leaveAt = clock.closeMinute + person.life.commute
     const outbound = next.staff.filter((item) => item.presence.lifeIntent === 'leave' && item.presence.movingUntil > now).length
-    if (person.presence.pose !== 'away' && clock.minute >= leaveAt && outbound < 2) {
+    if (!held && person.presence.pose !== 'away' && clock.minute >= leaveAt && outbound < 2) {
       const arriveAt = arrivalTime(person.presence, entrance, now, next.settings.reducedMotion)
       next = patchPerson(next, {
         ...person,

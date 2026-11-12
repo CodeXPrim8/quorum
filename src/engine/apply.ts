@@ -14,12 +14,12 @@ import { COMPANY_THREAD, QUORUM_THREAD, directThreadId, emptyQuorumId, ensureCha
 import {
   compileForOwner,
   isLineManager,
-  lineThreadId,
   noteFor,
   ownerReportDue,
   reportCadence,
   reportsTo,
 } from '../domain/reports'
+import { visitBrief } from '../domain/field-visit'
 import { designAudience } from '../domain/design-audience'
 import { composePoster } from '../domain/poster'
 import {
@@ -49,6 +49,7 @@ import { normalizeWebsite } from '../domain/website'
 import { fileApprovalRecord } from '../domain/records'
 import { clientLane, pickStaff } from '../domain/whatsapp'
 import { planClientTurn, quoteText, readOwnerPrice, sameItem } from '../domain/whatsapp-sales'
+import { quoteLines, requestLines } from '../domain/price-lines'
 import { actionLabel, approvalOutcome, rejectionOutcome } from './outcomes'
 import type {
   ActivityEvent,
@@ -329,6 +330,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return dropWhatsApp(state, command.phone)
     case 'CONFIRM_PRICE':
       return confirmListedPrice(state, command.item, command.amount, command.floor, now)
+    case 'CONFIRM_PRICES':
+      return confirmPriceLines(state, command.phone, command.lines, now)
     case 'INSTAGRAM_RESULT':
       return instagramResult(state, command.designId, command.status, now, command.error, command.mediaId)
     default:
@@ -354,7 +357,7 @@ function setReportCadence(state: AppState, cadence: AppState['settings']['report
       actorName: ownerName(state),
       kind: 'system',
       audit: true,
-      message: `Line managers will send you the compiled report ${label}. Staff still file to their manager at close every office day. Nothing is emailed.`,
+      message: `You will receive the compiled report ${label}. Daily notes stay on file and are not posted in chat. Nothing is emailed.`,
     },
   )
 }
@@ -365,37 +368,27 @@ function fileDayReports(state: AppState, now: number): AppState {
   let next = state
   if (next.clock.filedDay !== next.clock.day) next = fileStaffNotes(next, now)
   const cadence = reportCadence(next)
+  if (cadence === 'monthly' && next.clock.ownerReportDay < 0) {
+    next = { ...next, clock: { ...next.clock, ownerReportDay: next.clock.day } }
+  }
   if (ownerReportDue(cadence, next.clock.ownerReportDay, next.clock.day)) next = fileOwnerReports(next, now, cadence)
   return next
 }
 
-function fileStaffNotes(state: AppState, now: number): AppState {
+function fileStaffNotes(state: AppState, _now: number): AppState {
   const day = state.clock.day
   const people = state.staff.filter((person) => isStaffActive(state, person) && person.managerId)
   const reports: StaffReport[] = [...(state.reports ?? []).filter((item) => item.day >= day - 40)]
-  const chat = [...state.chat]
   for (const person of people) {
     const manager = state.staff.find((item) => item.id === person.managerId)
     if (!manager || !isStaffActive(state, manager)) continue
     const text = noteFor(person, state, day)
     if (!text) continue
     reports.push({ id: uid('rep'), staffId: person.id, managerId: person.managerId, day, text })
-    const thread = state.threads.find((item) => item.id === lineThreadId(person.id))
-    if (!thread) continue
-    chat.push(
-      chatMessage(now, {
-        threadId: thread.id,
-        authorId: person.id,
-        authorName: person.name,
-        text: text.slice(0, 700),
-        mentions: [],
-      }),
-    )
   }
   return {
     ...state,
     reports,
-    chat,
     clock: { ...state.clock, filedDay: day },
   }
 }
@@ -2436,7 +2429,8 @@ function sendMessage(state: AppState, threadId: string, text: string, now: numbe
     const name = titleFromAsk(body)
     threads = state.threads.map((item) => (item.id === thread.id ? { ...item, name } : item))
   }
-  const next = learnOwnerPrice(learn({ ...state, threads, chat: [...state.chat, message] }, now, 'fact', taught ?? ''), body, now)
+  let next = learnOwnerPrice(learn({ ...state, threads, chat: [...state.chat, message] }, now, 'fact', taught ?? ''), body, now)
+  next = holdOvernight(next, body, mentions, thread.id, now)
   if (mentions.length === 0) return next
   const names = mentions
     .map((id) => state.staff.find((person) => person.id === id)?.name)
@@ -2448,6 +2442,68 @@ function sendMessage(state: AppState, threadId: string, text: string, now: numbe
     audit: true,
     message: `You asked ${names.join(', ')} in ${thread.name}.`,
   })
+}
+
+const NIGHT_ORDER = /stay behind|work overnight|work through the night|stay in the office|stay late|don'?t go home|do not go home|come back to work|come back to the office|work tonight|call .+ back/i
+
+function holdOvernight(state: AppState, body: string, mentions: string[], threadId: string, now: number): AppState {
+  if (!NIGHT_ORDER.test(body)) return state
+  const named = state.staff.filter((person) => {
+    if (!isStaffActive(state, person)) return false
+    if (mentions.includes(person.id)) return true
+    return body.toLowerCase().includes(person.name.toLowerCase())
+  })
+  const everyone = /\beveryone\b|\ball staff\b|\bthe team\b/i.test(body)
+  const people = named.length > 0 ? named : everyone ? state.staff.filter((person) => isStaffActive(state, person)) : []
+  if (people.length === 0) return state
+  const until = now + 14 * 60 * 60 * 1000
+  let next = state
+  const chat = [...next.chat]
+  for (const person of people) {
+    next = {
+      ...next,
+      staff: next.staff.map((item) =>
+        item.id === person.id
+          ? {
+              ...item,
+              life: { ...item.life, overtimeUntil: until },
+              presence: {
+                ...item.presence,
+                x: item.deskX,
+                y: item.deskY,
+                originX: item.deskX,
+                originY: item.deskY,
+                pose: 'sit',
+                lifeIntent: 'none',
+                label: 'Working overnight',
+                movingUntil: now,
+                path: [],
+              },
+            }
+          : item,
+      ),
+    }
+    chat.push(
+      chatMessage(now, {
+        threadId,
+        authorId: person.id,
+        authorName: person.name,
+        text: "I'll stay and work through the night. If I've already gone home, call me and I'll come back in.",
+        mentions: [],
+      }),
+    )
+  }
+  return withEvent(
+    { ...next, chat },
+    now,
+    {
+      actorId: 'owner',
+      actorName: ownerName(state),
+      kind: 'task',
+      audit: true,
+      message: `${people.map((person) => person.name).join(', ')} will stay and work overnight.`,
+    },
+  )
 }
 
 function createGroup(state: AppState, id: string, name: string, memberIds: string[], now: number): AppState {
@@ -3080,6 +3136,9 @@ function effectsForKnownMessage(state: AppState, command: Extract<Command, { typ
     next = saveWhatsAppInvoice(next, phone, plan.invoice, person?.id, now)
   }
   if (plan.call) next = openCustomerCall(next, phone, existing.name, plan.sale.item, now)
+  if (plan.sale.stage === 'awaiting_price' && person) {
+    next = summonChairman(next, { staffId: person.id, staffName: person.name }, existing.name, phone, plan.sale.detail || plan.sale.item, now)
+  }
   const file = plan.invoice || plan.resendInvoice ? invoiceFile(next, phone, plan.invoice) : undefined
   const replyId = `wa_${command.messageId}`.slice(0, 140)
   return {
@@ -3150,7 +3209,9 @@ function syncWhatsApp(state: AppState, chats: Extract<Command, { type: 'WHATSAPP
     }
     if (effect?.call) next = openCustomerCall(next, phone, chat.name, chat.sale?.item, now)
   }
-  return { ...next, whatsapp: local }
+  next = { ...next, whatsapp: local }
+  for (const chat of next.whatsapp ?? []) next = coordinateVisit(next, chat.phone, now)
+  return next
 }
 
 function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHATSAPP_INBOUND' }>, now: number): AppState {
@@ -3267,7 +3328,13 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     if (file) replyMessage.file = file
   }
   if (plan.call) next = openCustomerCall(next, phone, name, plan.sale.item, now)
-  for (const note of plan.notes) next = postStaffNote(next, note, now)
+  const priceAsk = /current price|opening price/i
+  for (const note of plan.notes) {
+    if (!priceAsk.test(note.text)) next = postStaffNote(next, note, now)
+  }
+  if (plan.sale.stage === 'awaiting_price' && person) {
+    next = summonChairman(next, { staffId: person.id, staffName: person.name }, name, phone, plan.sale.detail || plan.sale.item, now)
+  }
   const chat: WaChat = {
     id: phone,
     name: existing?.name && existing.name !== phone ? existing.name : name,
@@ -3279,7 +3346,7 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     linked: command.linked,
     updatedAt: iso(now),
   }
-  return { ...next, whatsapp: [chat, ...chats.filter((item) => item.id !== phone)] }
+  return coordinateVisit({ ...next, whatsapp: [chat, ...chats.filter((item) => item.id !== phone)] }, phone, now)
 }
 
 function confirmListedPrice(state: AppState, item: string, amountText: string, floorText: string | undefined, now: number): AppState {
@@ -3289,7 +3356,13 @@ function confirmListedPrice(state: AppState, item: string, amountText: string, f
   if (!label || !read) return state
   const floor = floorRead && nairaDigits(floorRead.amount) < nairaDigits(read.amount) ? floorRead.amount : undefined
   const entry: PriceEntry = { id: uid('price'), item: label, amount: read.amount, floor, confirmedAt: iso(now) }
-  let next: AppState = { ...state, prices: [...(state.prices ?? []), entry] }
+  const quiet = releaseAttention(state, now)
+  let next: AppState = learn(
+    { ...quiet, prices: [...(quiet.prices ?? []), entry] },
+    now,
+    'decision',
+    `Opening price for ${label} is ${read.amount}${floor ? `. Lowest price is ${floor}` : ''}.`,
+  )
   const waiting = (next.whatsapp ?? []).filter(
     (chat) => chat.sale?.stage === 'awaiting_price' && chat.sale.item && sameItem(chat.sale.item, label),
   )
@@ -3316,6 +3389,48 @@ function confirmListedPrice(state: AppState, item: string, amountText: string, f
     )
   }
   return next
+}
+
+function confirmPriceLines(
+  state: AppState,
+  phone: string,
+  lines: { item: string; amount: string; floor?: string }[],
+  now: number,
+): AppState {
+  const digits = phone.replace(/\D/g, '')
+  let next = state
+  const quoted: { item: string; amount: string }[] = []
+  for (const line of lines) {
+    const label = line.item.trim()
+    const read = readOwnerPrice(line.amount, [label])
+    const floorRead = line.floor ? readOwnerPrice(line.floor, [label]) : null
+    if (!label || !read) continue
+    const floor = floorRead && nairaDigits(floorRead.amount) < nairaDigits(read.amount) ? floorRead.amount : undefined
+    const entry: PriceEntry = { id: uid('price'), item: label, amount: read.amount, floor, confirmedAt: iso(now) }
+    next = learn(
+      { ...next, prices: [...(next.prices ?? []), entry] },
+      now,
+      'decision',
+      `Opening price for ${label} is ${read.amount}${floor ? `. Lowest price is ${floor}` : ''}.`,
+    )
+    quoted.push({ item: label, amount: read.amount })
+  }
+  if (quoted.length === 0 || !digits) return next
+  const chat = (next.whatsapp ?? []).find((item) => item.phone.replace(/\D/g, '') === digits)
+  const known = requestLines(chat?.messages ?? [])
+  const complete = known.length === 0 || known.every((item) => quoted.some((line) => line.item.toLowerCase() === item.toLowerCase()))
+  const text = complete
+    ? quoted.length === 1
+      ? quoteText(quoted[0].item, undefined, quoted[0].amount)
+      : quoteLines(quoted)
+    : `Here are the prices I can confirm now:\n${quoted.map((line) => `${line.item}: ${line.amount}`).join('\n')}\nPlease hold on while I confirm the rest.`
+  next = appendWhatsAppReply(next, digits, text, now, {
+    item: quoted[0].item,
+    detail: (known.length ? known : quoted.map((line) => line.item)).join('; ').slice(0, 240),
+    stage: complete ? 'quoted' : 'awaiting_price',
+    priceAmount: quoted[0].amount,
+  })
+  return releaseAttention(next, now)
 }
 
 function learnOwnerPrice(state: AppState, body: string, now: number): AppState {
@@ -3426,6 +3541,70 @@ function saveWhatsAppInvoice(
       ...(state.records ?? []),
     ].slice(0, 200),
   }
+}
+
+function summonChairman(
+  state: AppState,
+  speaker: { staffId: string; staffName: string },
+  customer: string,
+  phone: string,
+  need: string | undefined,
+  now: number,
+): AppState {
+  const ready = ensureChat(state)
+  const threadId = quorumThreadId(ready)
+  if (!threadId || !ready.threads.some((thread) => thread.id === threadId)) return state
+  const asked = ready.chat.some(
+    (message) => message.threadId === threadId && message.text.includes(phone) && Date.parse(message.at) > now - 3 * 60 * 1000,
+  )
+  if (asked) return state
+  const sir = ready.company?.ownerGender === 'female' ? 'ma' : 'sir'
+  const title = ready.company?.ownerTitle ?? 'Chairman'
+  const about = (need || 'what they asked for').replace(/\s+/g, ' ').trim()
+  const spoken = `Hello ${sir}, your attention is needed. ${customer} wants a price for ${about}.`.slice(0, 220)
+  const text = `${spoken} ${title}, please set the opening price and the lowest price on the WhatsApp chat for ${phone}.`
+  const message = chatMessage(now, {
+    threadId,
+    authorId: speaker.staffId,
+    authorName: speaker.staffName,
+    text: text.slice(0, 1200),
+    mentions: [],
+  })
+  return {
+    ...raiseHands(ready, speaker.staffId, now),
+    chat: [...ready.chat, message],
+    attention: { id: message.id, staffId: speaker.staffId, staffName: speaker.staffName, spoken, threadId, phone, at: iso(now) },
+  }
+}
+
+function raiseHands(state: AppState, staffId: string, now: number): AppState {
+  return {
+    ...state,
+    staff: state.staff.map((person) => {
+      if (person.id !== staffId || person.presence.pose === 'away') return person
+      return {
+        ...person,
+        presence: {
+          ...person.presence,
+          pose: 'attention',
+          mode: 'waiting',
+          label: 'Needs your attention',
+          lifeIntent: 'none',
+          dwellUntil: now + 3 * 60 * 1000,
+        },
+      }
+    }),
+  }
+}
+
+function releaseAttention(state: AppState, now: number): AppState {
+  const staff = state.staff.map((person) =>
+    person.presence.pose === 'attention'
+      ? { ...person, presence: { ...person.presence, pose: 'sit' as const, mode: 'desk' as const, label: 'At desk', lifeIntent: 'none' as const, dwellUntil: now } }
+      : person,
+  )
+  if (!state.attention && staff.every((person, index) => person === state.staff[index])) return state
+  return { ...state, staff, attention: undefined }
 }
 
 function postStaffNote(state: AppState, note: { staffId: string; staffName: string; text: string }, now: number): AppState {
@@ -3603,18 +3782,83 @@ function invoiceFile(
   return { name: `${number}.pdf`, dataUrl: pdfDataUrl(bytes) }
 }
 
-function openCustomerCall(state: AppState, phone: string, name: string, item: string | undefined, now: number): AppState {
-  const pending = (state.calls ?? []).some((call) => call.phone === phone && call.status !== 'called')
-  if (pending) return state
+function openCustomerCall(state: AppState, phone: string, name: string, item: string | undefined, now: number, brief?: string): AppState {
+  const pending = (state.calls ?? []).find((call) => call.phone === phone && call.status !== 'called')
+  if (pending) {
+    if (!brief || pending.brief) return state
+    return { ...state, calls: (state.calls ?? []).map((call) => (call.id === pending.id ? { ...call, brief } : call)) }
+  }
   const call: CustomerCall = {
     id: uid('call'),
     phone,
     name,
     item,
+    brief,
     status: 'pending_approval',
     at: iso(now),
   }
   return { ...state, calls: [call, ...(state.calls ?? [])] }
+}
+
+function coordinateVisit(state: AppState, phone: string, now: number): AppState {
+  const chat = (state.whatsapp ?? []).find((item) => item.phone === phone)
+  if (!chat) return state
+  const brief = visitBrief(chat.messages)
+  if (!brief) return state
+  const people = state.staff.map((person) => ({
+    id: person.id,
+    name: person.name,
+    title: person.title,
+    roleKey: state.roles.find((role) => role.id === person.roleId)?.key ?? '',
+    departmentId: person.departmentId,
+    active: isStaffActive(state, person),
+  }))
+  const field = pickStaff(people, ['technology_lead', 'systems_engineer', 'release_engineer', 'systems_analyst'])
+  const handler = chat.assigneeId ? state.staff.find((person) => person.id === chat.assigneeId) : null
+  let next = openCustomerCall(state, phone, chat.name, chat.sale?.item, now, brief)
+  const title = `Site visit ${phone}`
+  if (field && !next.tasks.some((task) => task.title === title && task.status !== 'done')) {
+    const task: Task = {
+      id: uid('task'),
+      title,
+      description: `${chat.name} (${phone}) needs a site visit. ${brief}`,
+      status: 'ready',
+      priority: 'high',
+      assigneeId: field.id,
+      departmentId: field.departmentId,
+      source: 'staff',
+      playbook: [
+        {
+          kind: 'work',
+          startDetail: `${field.name} is preparing the site visit.`,
+          doneDetail: `${field.name} has the visit brief.`,
+          durationMs: 60_000,
+        },
+      ],
+      stepIndex: 0,
+      stepStartedAt: null,
+      handoff: null,
+      blockers: [],
+      result: null,
+      consequential: null,
+      createdAt: iso(now),
+      updatedAt: iso(now),
+    }
+    next = { ...next, tasks: [task, ...next.tasks] }
+    const speaker = handler ?? state.staff.find((person) => person.id === field.id)
+    if (speaker) {
+      next = postStaffNote(
+        next,
+        {
+          staffId: speaker.id,
+          staffName: speaker.name,
+          text: `Please approve a call to ${chat.name} on ${phone}. ${brief} ${field.name} has the site visit. You can call the customer yourself, or approve a call for an agent.`,
+        },
+        now,
+      )
+    }
+  }
+  return next
 }
 
 function decideCall(state: AppState, callId: string, decision: 'agent' | 'owner', now: number): AppState {
@@ -3667,6 +3911,7 @@ function completeCall(
           : 'Please send the name for the invoice, and an email or a delivery address.'
       }`
     : `I spoke with my boss. ${note}`
+  next = learn(next, now, 'decision', `After calling ${call.name}: ${note}${agreed ? ` Agreed price ${agreed}.` : ''}`)
   if (agreed && chat) {
     const customer = (next.customers ?? []).find((item) => item.phone === call.phone)
     if (customer?.email || customer?.address) {

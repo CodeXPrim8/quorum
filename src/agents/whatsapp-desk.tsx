@@ -32,6 +32,7 @@ function salesContext(state: AppState) {
     company: state.company?.name ?? 'the company',
     business: state.company?.businessType,
     goals: (state.company?.goals ?? []).map((goal) => goal.text).slice(0, 8),
+    learned: (state.memory ?? []).slice(0, 8).map((note) => note.text),
     handler: person(['account_executive', 'sales_manager', 'quote_specialist']),
     sales: person(['quote_specialist', 'sales_manager', 'account_executive']),
     prices: (state.prices ?? []).slice(-30),

@@ -108,6 +108,18 @@ function GltfHuman({ state, person, now, dim, onOpen, url }: Props & { url: stri
       <primitive object={clone} />
       {person.presence.pose === 'call' && <CallHeadset />}
       {person.presence.pose === 'call' && !walkingNow && <CallLaptop />}
+      {person.presence.pose === 'attention' && (
+        <group position={[0, 1.55, 0]}>
+          <mesh position={[-0.22, 0.42, 0]}>
+            <boxGeometry args={[0.05, 0.32, 0.05]} />
+            <meshStandardMaterial color="#f0c9a0" />
+          </mesh>
+          <mesh position={[0.22, 0.42, 0]}>
+            <boxGeometry args={[0.05, 0.32, 0.05]} />
+            <meshStandardMaterial color="#f0c9a0" />
+          </mesh>
+        </group>
+      )}
       <NameBadge name={first} dim={dim} />
     </group>
   )

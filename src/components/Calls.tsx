@@ -47,6 +47,7 @@ function CallRow({
       <p className="fine">
         {call.name} · {call.phone}
         {call.item ? ` · ${call.item}` : ''} · {formatWhen(call.at, now)}
+        {call.brief ? ` · ${call.brief}` : ''}
       </p>
       <p>
         {call.status === 'pending_approval' && 'Waiting for you to approve the call.'}

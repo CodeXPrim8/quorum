@@ -50,7 +50,7 @@ export type Priority = 'low' | 'medium' | 'high' | 'urgent'
 
 export type PresenceMode = 'desk' | 'meeting' | 'waiting' | 'reporting'
 
-export type Pose = 'sit' | 'stand' | 'walk' | 'drink' | 'away' | 'call'
+export type Pose = 'sit' | 'stand' | 'walk' | 'drink' | 'away' | 'call' | 'attention'
 
 export type LifeIntent = 'none' | 'water' | 'arrive' | 'leave' | 'chat' | 'errand'
 
@@ -128,6 +128,8 @@ export type StaffLife = {
   spentDay: number
   /** Office-clock minute of the next lounge, cafeteria, toilet, or technical visit. */
   nextErrand: number
+  /** Wall-clock time until which this person stays at their desk, even after close. */
+  overtimeUntil?: number
 }
 
 export type OfficeClock = {
@@ -365,6 +367,8 @@ export type CustomerCall = {
   conclusion?: string
   agreedAmount?: string
   voiceNote?: string
+  /** What the caller needs to know before they phone the customer. */
+  brief?: string
   at: string
   calledAt?: string
 }
@@ -685,6 +689,18 @@ export type AppState = {
   quorumScreen?: QuorumScreen | null
   /** An approved sports slip waiting for Quorum Desktop to place it. */
   pendingStake?: { taskId: string; instruction: string } | null
+  /** The office is calling the chairman out loud and in Quorum chat. */
+  attention?: AttentionCue
+}
+
+export type AttentionCue = {
+  id: string
+  staffId: string
+  staffName: string
+  spoken: string
+  threadId: string
+  phone: string
+  at: string
 }
 
 export type CompanyInput = {
@@ -833,6 +849,7 @@ export type Command =
   | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sending' | 'sent' | 'held' | 'failed'; error?: string }
   | { type: 'WHATSAPP_DROP'; phone: string }
   | { type: 'CONFIRM_PRICE'; item: string; amount: string; floor?: string; phone?: string }
+  | { type: 'CONFIRM_PRICES'; phone: string; lines: { item: string; amount: string; floor?: string }[] }
   | { type: 'DECIDE_CALL'; callId: string; decision: 'agent' | 'owner' }
   | { type: 'COMPLETE_CALL'; callId: string; conclusion: string; amount?: string; voiceNote?: string }
   | { type: 'FOLLOW_UP'; customerId: string; channel: 'whatsapp' | 'email' | 'call' }
