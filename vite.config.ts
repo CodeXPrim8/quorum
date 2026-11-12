@@ -36,6 +36,7 @@ import {
   lineReady,
   listInbound,
   parseWebhook,
+  sendWhatsAppDocument,
   sendWhatsAppText,
   signatureOk,
   verifyChallenge,
@@ -628,11 +629,13 @@ function whatsAppProxy(env: Record<string, string>): Plugin {
       return
     }
     if (path === '/api/whatsapp/send' && req.method === 'POST') {
-      void readBody(req, 20_000)
+      void readBody(req, 800_000)
         .then(async (raw) => {
-          const body = JSON.parse(raw || '{}') as { to?: string; text?: string; companyId?: string }
+          const body = JSON.parse(raw || '{}') as { to?: string; text?: string; companyId?: string; pdf?: string; filename?: string }
           const line = companyWhatsAppLine(app, body.companyId)
-          const result = await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
+          const result = body.pdf
+            ? await sendWhatsAppDocument(line, String(body.to ?? ''), String(body.text ?? ''), body.pdf, String(body.filename ?? 'invoice.pdf'))
+            : await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
           json(res, result.ok ? 200 : result.status, result.ok ? { ok: true } : { error: result.error })
         })
         .catch((error: unknown) => {

@@ -128,7 +128,63 @@ export async function sendWhatsAppText(env: WaEnv, to: string, text: string): Pr
     }),
   })
   if (response.ok) return { ok: true, status: response.status }
-  const raw = await response.text()
-  const hidden = env.token ? raw.split(env.token).join('…') : raw
-  return { ok: false, status: response.status, error: hidden.slice(0, 240) || 'WhatsApp did not accept the reply.' }
+  return { ok: false, status: response.status, error: graphError(rawSafe(await response.text(), env.token)) }
+}
+
+export async function sendWhatsAppDocument(
+  env: WaEnv,
+  to: string,
+  text: string,
+  pdfBase64: string,
+  filename: string,
+): Promise<{ ok: boolean; status: number; error?: string }> {
+  const phone = to.replace(/\D/g, '')
+  const caption = text.trim().slice(0, 1000)
+  const clean = pdfBase64.replace(/^data:application\/pdf;base64,/i, '')
+  if (!lineReady(env) || !phone || !clean) return { ok: false, status: 503, error: 'The company WhatsApp line is not connected.' }
+  const bytes = Buffer.from(clean, 'base64')
+  const form = new FormData()
+  form.set('messaging_product', 'whatsapp')
+  form.set('type', 'application/pdf')
+  form.set('file', new Blob([bytes], { type: 'application/pdf' }), filename || 'invoice.pdf')
+  const uploaded = await fetch(`https://graph.facebook.com/v21.0/${env.phoneNumberId}/media`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.token}` },
+    body: form,
+  })
+  const uploadedText = await uploaded.text()
+  if (!uploaded.ok) return { ok: false, status: uploaded.status, error: graphError(rawSafe(uploadedText, env.token)) }
+  let mediaId = ''
+  try {
+    mediaId = String((JSON.parse(uploadedText) as { id?: string }).id ?? '')
+  } catch {
+    mediaId = ''
+  }
+  if (!mediaId) return { ok: false, status: 502, error: 'WhatsApp did not accept the invoice file.' }
+  const response = await fetch(`https://graph.facebook.com/v21.0/${env.phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: phone,
+      type: 'document',
+      document: { id: mediaId, filename: filename || 'invoice.pdf', caption },
+    }),
+  })
+  if (response.ok) return { ok: true, status: response.status }
+  return { ok: false, status: response.status, error: graphError(rawSafe(await response.text(), env.token)) }
+}
+
+function rawSafe(raw: string, token: string): string {
+  return token ? raw.split(token).join('…') : raw
+}
+
+function graphError(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: string } }
+    if (parsed.error?.message) return parsed.error.message.slice(0, 240)
+  } catch {
+    /* The body is already short enough to show. */
+  }
+  return raw.slice(0, 240) || 'WhatsApp did not accept the reply.'
 }

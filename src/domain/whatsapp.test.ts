@@ -136,4 +136,29 @@ describe('whatsapp command', () => {
     expect(state.customers?.some((item) => item.phone === '2348131074911' && item.email === 'ada@example.com')).toBe(true)
     expect(state.invoices?.[0]?.amount).toBe('₦450,000')
   })
+
+  it('asks for a brand before pricing a vague need, then stops at the floor and opens a call', () => {
+    const now = Date.parse('2026-11-12T02:00:00Z')
+    const ask = (state: ReturnType<typeof bareSample>, id: string, text: string, at = now) =>
+      applyCommand(state, { type: 'WHATSAPP_INBOUND', phone: '2348000000001', name: 'Ada Cole', text, messageId: id, linked: true }, at)
+    let state = ask(bareSample(now), 'wamid.q1', 'Do you have a laptop?')
+    state = ask(state, 'wamid.q2', 'Anyways I need a laptop for work', now + 1)
+    const vague = state.whatsapp?.find((item) => item.phone === '2348000000001')
+    expect(vague?.sale?.stage).toBe('qualifying')
+    expect(vague?.messages.at(-1)?.text).toMatch(/brand/i)
+    expect(vague?.messages.at(-1)?.text).not.toContain('Anyways I need a laptop for work')
+
+    state = ask(state, 'wamid.q3', 'HP, 2 units', now + 2)
+    state = applyCommand(state, { type: 'CONFIRM_PRICE', item: 'laptop', amount: '1000000', floor: '950000' }, now + 3)
+    expect(state.whatsapp?.find((item) => item.phone === '2348000000001')?.messages.at(-1)?.text).toContain('₦1,000,000')
+    expect(state.prices?.at(-1)?.floor).toBe('₦950,000')
+
+    state = ask(state, 'wamid.q4', 'Can you do a better price?', now + 4)
+    expect(state.whatsapp?.find((item) => item.phone === '2348000000001')?.messages.at(-1)?.text).toContain('₦950,000')
+
+    state = ask(state, 'wamid.q5', 'No, that is too expensive', now + 5)
+    expect(state.whatsapp?.find((item) => item.phone === '2348000000001')?.sale?.stage).toBe('calling')
+    expect(state.calls?.[0]?.status).toBe('pending_approval')
+    expect(state.calls?.[0]?.phone).toBe('2348000000001')
+  })
 })

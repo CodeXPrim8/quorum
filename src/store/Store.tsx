@@ -79,6 +79,7 @@ function hydrate(parsed: AppState, now: number): AppState {
       prices: parsed.prices ?? [],
       customers: parsed.customers ?? [],
       invoices: parsed.invoices ?? [],
+      calls: parsed.calls ?? [],
       goalProposals: parsed.goalProposals ?? [],
       clock: parsed.clock
         ? {

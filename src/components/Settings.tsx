@@ -4,7 +4,7 @@ import { reportCadence } from '../domain/reports'
 import { invalidSocial, normalizeSocial, type CompanySocial } from '../domain/social'
 import { normalizeWebsite } from '../domain/website'
 import { SocialFields } from './SocialFields'
-import type { AppState, Command, OwnerGender, ReportCadence } from '../types'
+import type { AppState, Command, Company, OwnerGender, ReportCadence } from '../types'
 
 export function Settings({ state, dispatch }: { state: AppState; dispatch: (command: Command) => void }) {
   const company = state.company
@@ -111,6 +111,7 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
           Save profile
         </button>
       </form>
+      <InvoiceFields company={company} dispatch={dispatch} />
       <section className="panel">
         <h2>Office time</h2>
         <p>Staff match your morning, afternoon, and night. Turn it off to use the office clock.</p>
@@ -359,5 +360,63 @@ export function Settings({ state, dispatch }: { state: AppState; dispatch: (comm
         )}
       </section>
     </div>
+  )
+}
+
+function InvoiceFields({ company, dispatch }: { company: Company; dispatch: (command: Command) => void }) {
+  const saved = company.invoiceProfile
+  const [bankName, setBankName] = useState(saved?.bankName ?? '')
+  const [accountName, setAccountName] = useState(saved?.accountName ?? '')
+  const [accountNumber, setAccountNumber] = useState(saved?.accountNumber ?? '')
+  const [template, setTemplate] = useState<'classic' | 'plain'>(saved?.template ?? 'classic')
+  const [extra, setExtra] = useState(saved?.extra ?? '')
+  return (
+    <form
+      className="panel form-grid"
+      onSubmit={(event) => {
+        event.preventDefault()
+        dispatch({
+          type: 'UPDATE_COMPANY',
+          patch: {
+            invoiceProfile: {
+              bankName: bankName.trim(),
+              accountName: accountName.trim(),
+              accountNumber: accountNumber.trim(),
+              template,
+              extra: extra.trim(),
+            },
+          },
+        })
+      }}
+    >
+      <h2>Invoice</h2>
+      <p>These details are printed on invoices for this company. Fill them in, or leave a line blank if it should not appear.</p>
+      <label>
+        Bank
+        <input value={bankName} onChange={(event) => setBankName(event.target.value)} />
+      </label>
+      <label>
+        Account name
+        <input value={accountName} onChange={(event) => setAccountName(event.target.value)} />
+      </label>
+      <label>
+        Account number
+        <input value={accountNumber} onChange={(event) => setAccountNumber(event.target.value)} />
+      </label>
+      <label>
+        Template
+        <select value={template} onChange={(event) => setTemplate(event.target.value as 'classic' | 'plain')}>
+          <option value="classic">Classic</option>
+          <option value="plain">Plain</option>
+        </select>
+      </label>
+      <label>
+        Extra line
+        <input value={extra} onChange={(event) => setExtra(event.target.value)} placeholder="Address, tax number, or a payment note" />
+      </label>
+      <button type="submit" className="btn btn-primary">
+        Save invoice details
+      </button>
+    </form>
   )
 }

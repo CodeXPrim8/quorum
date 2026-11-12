@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { companyMetaPublicNow, companyWhatsAppLineNow, metaAppEnv } from './meta-oauth.js'
-import { lineReady, parseWebhook, sendWhatsAppText, signatureOk, verifyChallenge, whatsAppEnv } from './whatsapp.js'
+import { lineReady, parseWebhook, sendWhatsAppDocument, sendWhatsAppText, signatureOk, verifyChallenge, whatsAppEnv } from './whatsapp.js'
 import { cloudAckInbound, cloudEnqueueInbound, cloudListInbound } from './whatsapp-cloud.js'
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -102,9 +102,17 @@ export async function serveWhatsApp(req: IncomingMessage, res: ServerResponse, p
 
   if (pathname === '/api/whatsapp/send' && method === 'POST') {
     try {
-      const body = JSON.parse((await readBody(req)) || '{}') as { to?: string; text?: string; companyId?: string }
+      const body = JSON.parse((await readBody(req, 800_000)) || '{}') as {
+        to?: string
+        text?: string
+        companyId?: string
+        pdf?: string
+        filename?: string
+      }
       const line = await companyWhatsAppLineNow(app, body.companyId)
-      const result = await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
+      const result = body.pdf
+        ? await sendWhatsAppDocument(line, String(body.to ?? ''), String(body.text ?? ''), body.pdf, String(body.filename ?? 'invoice.pdf'))
+        : await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
       json(res, result.ok ? 200 : result.status, result.ok ? { ok: true } : { error: result.error })
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : 'WhatsApp could not be reached.' })

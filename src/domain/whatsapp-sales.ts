@@ -32,6 +32,10 @@ export type PlannedTurn = {
   notes: SaleNote[]
   customer?: PlannedCustomer
   invoice?: PlannedInvoice
+  /** The customer refused the lowest price. The owner must approve a call. */
+  call?: boolean
+  /** Send the invoice PDF again with this reply. */
+  resendInvoice?: boolean
 }
 
 type TurnInput = {
@@ -46,6 +50,7 @@ type TurnInput = {
   prices: PriceEntry[]
   products: Product[]
   now: number
+  account?: { bankName: string; accountName: string; accountNumber: string }
 }
 
 const ITEM_WORD =
@@ -107,8 +112,12 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
   }
 
   if (sale.stage === 'invoiced' && sale.invoiceNumber) {
+    return invoicedReply(input, sale, handler, text)
+  }
+
+  if (sale.stage === 'calling') {
     return {
-      reply: introduce(handler, input.company, input.history, `You are welcome. Invoice ${sale.invoiceNumber} is already on file for ${sale.item ?? 'this order'}. Tell me if any detail should change.`),
+      reply: introduce(handler, input.company, input.history, 'I have passed this to my boss. I will message you here once we have spoken.'),
       sale,
       notes: [],
     }
@@ -120,6 +129,32 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
 
   if (sale.stage === 'quoted' && agrees(text) && !differentItem(text, sale.item)) {
     return acceptQuote(input, sale, handler, text)
+  }
+
+  if (sale.stage === 'quoted' && sale.item && sale.priceAmount && bargains(text) && !differentItem(text, sale.item)) {
+    const priced = latestPrice(input.prices, sale.item)
+    const floor = priced?.floor && nairaValue(priced.floor) > 0 && nairaValue(priced.floor) < nairaValue(priced.amount) ? priced.floor : ''
+    if (floor && !sale.offeredFloor) {
+      return {
+        reply: introduce(handler, input.company, input.history, `I can do ${floor} for the ${sale.item}.`),
+        sale: { ...sale, priceAmount: floor, offeredFloor: true },
+        notes: notesForStepDown(handler, input.sales ?? handler, input.profileName, sale.item, floor),
+      }
+    }
+    if (sale.offeredFloor && refuses(text)) {
+      return {
+        reply: introduce(handler, input.company, input.history, 'Let me speak with my boss and come back to you on this chat.'),
+        sale: { ...sale, stage: 'calling' },
+        notes: [
+          {
+            staffId: handler.id,
+            staffName: handler.name,
+            text: `${input.profileName} (${input.phone}) would not take ${sale.priceAmount} for the ${sale.item}. Please approve a call.`,
+          },
+        ],
+        call: true,
+      }
+    }
   }
 
   if (sale.stage === 'quoted' && sale.item && sale.priceAmount && !differentItem(text, sale.item)) {
@@ -162,9 +197,16 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
 
   const switched = Boolean(sale.item && !sameItem(sale.item, item))
   const nextSale: WaSale = switched ? { stage: 'open', item } : { ...sale, item }
-  const enough = hasEnough(text) || (nextSale.stage === 'qualifying' && !isGreeting(text) && text.length > 1)
-  const detail = enough ? clip(text) : nextSale.detail
-  if (!enough) {
+  const enough = hasEnough(text)
+  const detail = enough || nextSale.askedDetail ? cleanNeed(text, item) : nextSale.detail
+  if (!enough && !(nextSale.stage === 'qualifying' && nextSale.askedDetail)) {
+    if (nextSale.stage === 'qualifying') {
+      return {
+        reply: introduce(handler, input.company, input.history, `For the ${item}, which brand do you prefer, and how many do you need?`),
+        sale: { ...nextSale, stage: 'qualifying', askedDetail: true, detail: cleanNeed(text, item) },
+        notes: [],
+      }
+    }
     const fact = productFact(input.products, item)
     const ask = SERVICE.test(item) || SERVICE.test(text)
       ? 'What should it include, and when do you need it?'
@@ -275,7 +317,7 @@ function notesForMissingPrice(
   detail: string | undefined,
   last: string,
 ): SaleNote[] {
-  const ask = `${customer} on WhatsApp wants a current price for ${item}${detail ? ` (${short(detail)})` : ''}.${last} Reply with the price, for example 450000, or confirm it on the WhatsApp chat. I will not send a figure until you confirm it.`
+  const ask = `${customer} on WhatsApp wants a current price for ${item}${detail ? ` (${short(detail)})` : ''}.${last} Set the opening price and the lowest price on the WhatsApp chat, for example open 1000000 and lowest 950000. I will start at the opening price and will not go below the lowest.`
   if (handler.id === sales.id) {
     return [{ staffId: sales.id, staffName: sales.name, text: ask }]
   }
@@ -371,6 +413,70 @@ function productFact(products: Product[], item: string): string {
   const fact = hit?.fact?.trim()
   if (!fact || fact.length > 140) return ''
   return fact.endsWith('.') ? fact : `${fact}.`
+}
+
+function invoicedReply(input: TurnInput, sale: WaSale, handler: SaleStaff, text: string): PlannedTurn {
+  const number = sale.invoiceNumber ?? 'the invoice'
+  const item = sale.item ?? 'this order'
+  if (/\bpdf\b/i.test(text)) {
+    return {
+      reply: introduce(handler, input.company, input.history, `I am sending invoice ${number} as a PDF.`),
+      sale,
+      notes: [],
+      resendInvoice: true,
+    }
+  }
+  if (/\baccount\b/i.test(text)) {
+    const account = input.account
+    const line = account?.accountNumber
+      ? `You can pay invoice ${number} to ${account.accountName}, ${account.bankName}, account ${account.accountNumber}.`
+      : `I am adding the company account number to invoice ${number} and I will send it here.`
+    return {
+      reply: introduce(handler, input.company, input.history, line),
+      sale,
+      notes: account?.accountNumber
+        ? []
+        : [{ staffId: handler.id, staffName: handler.name, text: `${input.profileName} asked for the account number on invoice ${number}. Add it under Company.` }],
+    }
+  }
+  return {
+    reply: introduce(handler, input.company, input.history, `Invoice ${number} for the ${item} is with you. Tell me what you want changed, or if you need the PDF again.`),
+    sale,
+    notes: [],
+  }
+}
+
+function notesForStepDown(handler: SaleStaff, sales: SaleStaff, customer: string, item: string, floor: string): SaleNote[] {
+  return [
+    {
+      staffId: sales.id,
+      staffName: sales.name,
+      text: `${handler.name} offered ${floor} for the ${item} to ${customer}. That is the lowest confirmed price.`,
+    },
+  ]
+}
+
+function bargains(text: string): boolean {
+  return /\b(too (?:much|expensive|high)|reduce|discount|last price|best price|lower|come down|can you do|better price)\b/i.test(text)
+}
+
+function refuses(text: string): boolean {
+  return /^(no|nope|can't|cannot)\b|\b(too (?:much|expensive|high)|not interested|i can't pay|leave it|no deal)\b/i.test(text.trim())
+}
+
+function cleanNeed(text: string, item: string): string {
+  const use = text.match(/\bfor (work|school|the office|office|gaming|business|home|students?)\b/i)
+  const brand = text.match(/\b(hp|dell|lenovo|apple|asus|acer|macbook)\b/i)
+  const qty = text.match(/\b(\d+)\b/)
+  const parts = [qty ? `${qty[1]}` : '', brand?.[1] ?? '', use ? use[0].toLowerCase() : ''].filter(Boolean)
+  if (parts.length > 0) return parts.join(' ').slice(0, 80)
+  if (text.trim().length <= 32 && !/\b(anyway|anyways|need|want|have|laptop)\b/i.test(text)) return clip(text)
+  return item
+}
+
+function nairaValue(amount: string): number {
+  const value = Number(amount.replace(/[^\d.]/g, ''))
+  return Number.isFinite(value) ? value : 0
 }
 
 function moneyFrom(text: string): string | null {

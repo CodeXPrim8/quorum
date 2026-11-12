@@ -15,6 +15,7 @@ const groups: Array<{ label: string; links: Array<[string, string]> }> = [
       ['tasks', 'Tasks'],
       ['chat', 'Chat'],
       ['whatsapp', 'WhatsApp'],
+      ['calls', 'Call room'],
       ['approvals', 'Approvals'],
     ],
   },

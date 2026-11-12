@@ -32,6 +32,7 @@ import {
   platformLabel,
 } from '../domain/calendar'
 import { documentPdf, pdfDataUrl } from '../lib/pdf'
+import { invoicePdf } from '../lib/invoice-pdf'
 import { proposalPdf } from '../lib/proposal-pdf'
 import { documentOf, parseDocument, withWriter } from '../agents/writing'
 import { appearanceAt, blankState, ensureOfferings, instantiateDepartments, instantiateRoles } from '../domain/sample'
@@ -62,6 +63,7 @@ import type {
   CompanyInput,
   CompanyMetaStatus,
   Customer,
+  CustomerCall,
   CustomerInvoice,
   ConsequentialAction,
   DesktopMode,
@@ -314,11 +316,17 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
     case 'WHATSAPP_INBOUND':
       return receiveWhatsApp(state, command, now)
     case 'WHATSAPP_DELIVERY':
-      return markWhatsAppDelivery(state, command.phone, command.messageId, command.status, now)
+      return markWhatsAppDelivery(state, command.phone, command.messageId, command.status, now, command.error)
+    case 'DECIDE_CALL':
+      return decideCall(state, command.callId, command.decision, now)
+    case 'COMPLETE_CALL':
+      return completeCall(state, command.callId, command.conclusion, command.amount, command.voiceNote, now)
+    case 'FOLLOW_UP':
+      return followUpCustomer(state, command.customerId, command.channel, now)
     case 'WHATSAPP_DROP':
       return dropWhatsApp(state, command.phone)
     case 'CONFIRM_PRICE':
-      return confirmListedPrice(state, command.item, command.amount, now)
+      return confirmListedPrice(state, command.item, command.amount, command.floor, now)
     case 'INSTAGRAM_RESULT':
       return instagramResult(state, command.designId, command.status, now, command.error, command.mediaId)
     default:
@@ -1580,6 +1588,7 @@ function updateCompany(
     ownerGender: Company['ownerGender']
     website: string
     social: Company['social']
+    invoiceProfile: Company['invoiceProfile']
   }>,
   now: number,
 ): AppState {
@@ -1593,6 +1602,7 @@ function updateCompany(
     ownerGender: patch.ownerGender ?? state.company.ownerGender,
     website: patch.website !== undefined ? normalizeWebsite(patch.website) : state.company.website,
     social: patch.social !== undefined ? normalizeSocial(patch.social) : state.company.social,
+    invoiceProfile: patch.invoiceProfile !== undefined ? patch.invoiceProfile : state.company.invoiceProfile,
   }
   return withEvent({ ...state, company }, now, {
     actorId: 'owner',
@@ -3036,10 +3046,12 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     departmentId: person.departmentId,
     active: isStaffActive(state, person),
   }))
-  const person = lane.refused ? null : pickStaff(people, lane.keys)
-  const sales = pickStaff(people, ['quote_specialist', 'sales_manager', 'account_executive'])
   const name = command.name.trim().slice(0, 80) || phone
   const existing = chats.find((chat) => chat.id === phone)
+  const locked = existing?.assigneeId ? people.find((item) => item.id === existing.assigneeId && item.active) : null
+  const person = lane.refused ? null : locked ?? pickStaff(people, lane.keys)
+  const sales = pickStaff(people, ['quote_specialist', 'sales_manager', 'account_executive'])
+  const profile = state.company?.invoiceProfile
   const plan = planClientTurn({
     company: company.name,
     handler: person ? { id: person.id, name: person.name, title: person.title } : null,
@@ -3052,6 +3064,9 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
     prices: state.prices ?? [],
     products: state.products ?? [],
     now,
+    account: profile?.accountNumber
+      ? { bankName: profile.bankName, accountName: profile.accountName, accountNumber: profile.accountNumber }
+      : undefined,
   })
   const reply = plan.reply
   const clientMessage: WaMessage = { id: messageId, at: iso(now), author: 'client', text, status: 'received' }
@@ -3121,6 +3136,11 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
   }
   if (plan.customer) next = saveWhatsAppCustomer(next, phone, plan.customer, now)
   if (plan.invoice) next = saveWhatsAppInvoice(next, phone, plan.invoice, person?.id, now)
+  if (plan.invoice || plan.resendInvoice) {
+    const file = invoiceFile(next, phone, plan.invoice)
+    if (file) replyMessage.file = file
+  }
+  if (plan.call) next = openCustomerCall(next, phone, name, plan.sale.item, now)
   for (const note of plan.notes) next = postStaffNote(next, note, now)
   const chat: WaChat = {
     id: phone,
@@ -3136,11 +3156,13 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
   return { ...next, whatsapp: [chat, ...chats.filter((item) => item.id !== phone)] }
 }
 
-function confirmListedPrice(state: AppState, item: string, amountText: string, now: number): AppState {
+function confirmListedPrice(state: AppState, item: string, amountText: string, floorText: string | undefined, now: number): AppState {
   const label = item.trim()
   const read = readOwnerPrice(`${label} ${amountText}`, [label])
+  const floorRead = floorText ? readOwnerPrice(`${label} ${floorText}`, [label]) : null
   if (!label || !read) return state
-  const entry: PriceEntry = { id: uid('price'), item: label, amount: read.amount, confirmedAt: iso(now) }
+  const floor = floorRead && nairaDigits(floorRead.amount) < nairaDigits(read.amount) ? floorRead.amount : undefined
+  const entry: PriceEntry = { id: uid('price'), item: label, amount: read.amount, floor, confirmedAt: iso(now) }
   let next: AppState = { ...state, prices: [...(state.prices ?? []), entry] }
   const waiting = (next.whatsapp ?? []).filter(
     (chat) => chat.sale?.stage === 'awaiting_price' && chat.sale.item && sameItem(chat.sale.item, label),
@@ -3178,7 +3200,12 @@ function learnOwnerPrice(state: AppState, body: string, now: number): AppState {
   if (!read) return state
   const item = read.item ?? (items.length === 1 ? items[0] : '')
   if (!item) return state
-  return confirmListedPrice(state, item, read.amount, now)
+  return confirmListedPrice(state, item, read.amount, undefined, now)
+}
+
+function nairaDigits(amount: string): number {
+  const value = Number(amount.replace(/[^\d.]/g, ''))
+  return Number.isFinite(value) ? value : 0
 }
 
 function appendWhatsAppReply(
@@ -3276,9 +3303,12 @@ function saveWhatsAppInvoice(
 }
 
 function postStaffNote(state: AppState, note: { staffId: string; staffName: string; text: string }, now: number): AppState {
-  if (!state.threads.some((thread) => thread.id === COMPANY_THREAD)) return state
+  const direct = directThreadId(note.staffId)
+  const askOwner = /opening price|approve a call|account number/i.test(note.text)
+  const threadId = !askOwner && state.threads.some((thread) => thread.id === direct) ? direct : COMPANY_THREAD
+  if (!state.threads.some((thread) => thread.id === threadId)) return state
   const message = chatMessage(now, {
-    threadId: COMPANY_THREAD,
+    threadId,
     authorId: note.staffId,
     authorName: note.staffName,
     text: note.text.slice(0, 1200),
@@ -3419,21 +3449,193 @@ function instagramResult(
   )
 }
 
+function invoiceFile(
+  state: AppState,
+  phone: string,
+  planned?: { number: string; item: string; detail?: string; amount: string; customerName: string; email?: string; address?: string },
+): { name: string; dataUrl: string } | null {
+  const saved = (state.invoices ?? []).find((item) => item.phone === phone)
+  const number = planned?.number ?? saved?.number
+  const amount = planned?.amount ?? saved?.amount
+  const item = planned?.item ?? saved?.item
+  const customerName = planned?.customerName ?? saved?.customerName
+  if (!state.company || !number || !amount || !item || !customerName) return null
+  const customer = (state.customers ?? []).find((row) => row.phone === phone)
+  const bytes = invoicePdf({
+    brand: state.company.name,
+    number,
+    date: new Date().toISOString().slice(0, 10),
+    customerName,
+    phone,
+    email: planned?.email ?? customer?.email,
+    address: planned?.address ?? customer?.address,
+    item,
+    detail: planned?.detail ?? saved?.detail,
+    amount,
+    profile: state.company.invoiceProfile,
+  })
+  return { name: `${number}.pdf`, dataUrl: pdfDataUrl(bytes) }
+}
+
+function openCustomerCall(state: AppState, phone: string, name: string, item: string | undefined, now: number): AppState {
+  const pending = (state.calls ?? []).some((call) => call.phone === phone && call.status !== 'called')
+  if (pending) return state
+  const call: CustomerCall = {
+    id: uid('call'),
+    phone,
+    name,
+    item,
+    status: 'pending_approval',
+    at: iso(now),
+  }
+  return { ...state, calls: [call, ...(state.calls ?? [])] }
+}
+
+function decideCall(state: AppState, callId: string, decision: 'agent' | 'owner', now: number): AppState {
+  const call = (state.calls ?? []).find((item) => item.id === callId)
+  if (!call || call.status !== 'pending_approval') return state
+  const status = decision === 'owner' ? 'owner_calling' : 'approved_agent'
+  return withEvent(
+    {
+      ...state,
+      calls: (state.calls ?? []).map((item) => (item.id === callId ? { ...item, status } : item)),
+    },
+    now,
+    {
+      actorId: 'owner',
+      actorName: ownerName(state),
+      kind: 'task',
+      audit: true,
+      message: decision === 'owner' ? `You will call ${call.name}.` : `You approved a call to ${call.name}.`,
+    },
+  )
+}
+
+function completeCall(
+  state: AppState,
+  callId: string,
+  conclusion: string,
+  amountText: string | undefined,
+  voiceNote: string | undefined,
+  now: number,
+): AppState {
+  const call = (state.calls ?? []).find((item) => item.id === callId)
+  const note = conclusion.trim()
+  if (!call || call.status === 'called' || call.status === 'pending_approval' || !note) return state
+  const priced = amountText ? readOwnerPrice(`${call.item ?? 'item'} ${amountText}`, [call.item ?? 'item']) : null
+  const agreed = priced?.amount
+  let next: AppState = {
+    ...state,
+    calls: (state.calls ?? []).map((item) =>
+      item.id === callId
+        ? { ...item, status: 'called' as const, conclusion: note.slice(0, 1000), agreedAmount: agreed, voiceNote, calledAt: iso(now) }
+        : item,
+    ),
+  }
+  const chat = (next.whatsapp ?? []).find((item) => item.phone === call.phone)
+  const handler = chat?.assigneeId ? next.staff.find((person) => person.id === chat.assigneeId) : null
+  const text = agreed
+    ? `I spoke with my boss. We can proceed at ${agreed} for the ${call.item ?? 'order'}. ${
+        (next.customers ?? []).some((customer) => customer.phone === call.phone && (customer.email || customer.address))
+          ? 'Here is the invoice.'
+          : 'Please send the name for the invoice, and an email or a delivery address.'
+      }`
+    : `I spoke with my boss. ${note}`
+  if (agreed && chat) {
+    const customer = (next.customers ?? []).find((item) => item.phone === call.phone)
+    if (customer?.email || customer?.address) {
+      const invoice = {
+        number: `QSI-${new Date(now).toISOString().slice(0, 10).replace(/-/g, '')}-${call.phone.slice(-4)}`,
+        item: call.item ?? 'order',
+        detail: chat.sale?.detail,
+        amount: agreed,
+        customerName: customer.name,
+        email: customer.email,
+        address: customer.address,
+      }
+      next = saveWhatsAppInvoice(next, call.phone, invoice, handler?.id, now)
+      const file = invoiceFile(next, call.phone, invoice)
+      next = appendWhatsAppReply(next, call.phone, text, now, {
+        ...(chat.sale ?? { stage: 'invoiced' }),
+        item: call.item,
+        stage: 'invoiced',
+        priceAmount: agreed,
+        invoiceNumber: invoice.number,
+      })
+      if (file) {
+        next = {
+          ...next,
+          whatsapp: (next.whatsapp ?? []).map((item) =>
+            item.phone === call.phone
+              ? { ...item, messages: item.messages.map((message, index) => (index === item.messages.length - 1 ? { ...message, file } : message)) }
+              : item,
+          ),
+        }
+      }
+    } else {
+      next = appendWhatsAppReply(next, call.phone, text, now, {
+        ...(chat.sale ?? { stage: 'details' }),
+        item: call.item,
+        stage: 'details',
+        priceAmount: agreed,
+      })
+    }
+  } else if (chat) {
+    next = appendWhatsAppReply(next, call.phone, text, now, chat.sale)
+  }
+  return withEvent(next, now, {
+    actorId: 'owner',
+    actorName: ownerName(state),
+    kind: 'result',
+    audit: true,
+    message: `You called ${call.name}. ${note.slice(0, 180)}`,
+  })
+}
+
+function followUpCustomer(state: AppState, customerId: string, channel: 'whatsapp' | 'email' | 'call', now: number): AppState {
+  const customer = (state.customers ?? []).find((item) => item.id === customerId)
+  if (!customer || !state.company) return state
+  const text = `Hello ${customer.name}, this is ${state.company.name}. We wanted to check in and see how you are getting on.`
+  if (channel === 'email') {
+    return {
+      ...state,
+      records: [
+        {
+          id: uid('rec'),
+          kind: 'email' as const,
+          title: `Check in with ${customer.name}`,
+          body: `${text}${customer.email ? ` Email: ${customer.email}` : ' No email saved yet.'}`,
+          status: 'held' as const,
+          at: iso(now),
+        },
+        ...(state.records ?? []),
+      ].slice(0, 200),
+    }
+  }
+  if (channel === 'call') return openCustomerCall(state, customer.phone, customer.name, customer.item, now)
+  const chat = (state.whatsapp ?? []).find((item) => item.phone === customer.phone)
+  if (!chat) return state
+  return appendWhatsAppReply(state, customer.phone, text, now, chat.sale)
+}
+
 function markWhatsAppDelivery(
   state: AppState,
   phone: string,
   messageId: string,
-  status: 'sent' | 'held' | 'failed',
+  status: 'sending' | 'sent' | 'held' | 'failed',
   now: number,
+  error?: string,
 ): AppState {
   const digits = phone.replace(/\D/g, '')
   let changed = false
   const whatsapp = (state.whatsapp ?? []).map((chat) => {
     if (chat.phone !== digits) return chat
     const messages = chat.messages.map((message) => {
-      if (message.id !== messageId || message.status === status) return message
+      if (message.id !== messageId) return message
+      if (message.status === 'sent' && status !== 'sent') return message
+      if (message.status === status && message.error === error) return message
       changed = true
-      return { ...message, status }
+      return { ...message, status, error: error?.slice(0, 240) }
     })
     return { ...chat, messages, updatedAt: iso(now) }
   })

@@ -18,6 +18,7 @@ import { QuorumVoice } from './components/QuorumVoice'
 import { InstagramDesk } from './agents/instagram-desk'
 import { WhatsAppDesk } from './agents/whatsapp-desk'
 import { WhatsAppView } from './components/WhatsAppView'
+import { CallPrompt, Calls } from './components/Calls'
 import { OfficeView } from './office/OfficeView'
 import { useStore } from './store/Store'
 import { isStaffActive } from './domain/active'
@@ -95,6 +96,9 @@ export function App() {
     case 'whatsapp':
       content = <WhatsAppView state={state} dispatch={dispatch} selectedId={route.id} />
       break
+    case 'calls':
+      content = <Calls state={state} dispatch={dispatch} now={now} />
+      break
     case 'activity':
       content = <ActivityLog state={state} now={now} />
       break
@@ -145,6 +149,7 @@ export function App() {
     >
       <AgentDesk state={state} dispatch={dispatch} />
       <WhatsAppDesk state={state} dispatch={dispatch} />
+      <CallPrompt state={state} dispatch={dispatch} />
       <InstagramDesk state={state} dispatch={dispatch} />
       {content}
       {call && (

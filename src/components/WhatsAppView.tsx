@@ -15,6 +15,7 @@ export function WhatsAppView({
   const selected = chats.find((chat) => chat.id === selectedId) ?? chats[0] ?? null
   const [linked, setLinked] = useState<boolean | null>(null)
   const [price, setPrice] = useState('')
+  const [floor, setFloor] = useState('')
   const assignee = selected?.assigneeId ? state.staff.find((person) => person.id === selected.assigneeId) : null
   const open = Boolean(selectedId && selected)
 
@@ -38,6 +39,7 @@ export function WhatsAppView({
 
   useEffect(() => {
     setPrice('')
+    setFloor('')
   }, [selected?.id])
 
   return (
@@ -83,6 +85,17 @@ export function WhatsAppView({
                       {customer.email ? ` · ${customer.email}` : ''}
                       {invoice ? ` · ${invoice.number} ${invoice.amount}` : ''}
                     </small>
+                    <span className="button-row">
+                      <button type="button" className="btn" onClick={() => dispatch({ type: 'FOLLOW_UP', customerId: customer.id, channel: 'whatsapp' })}>
+                        WhatsApp
+                      </button>
+                      <button type="button" className="btn" onClick={() => dispatch({ type: 'FOLLOW_UP', customerId: customer.id, channel: 'email' })}>
+                        Email
+                      </button>
+                      <button type="button" className="btn" onClick={() => dispatch({ type: 'FOLLOW_UP', customerId: customer.id, channel: 'call' })}>
+                        Call
+                      </button>
+                    </span>
                   </li>
                 )
               })}
@@ -124,17 +137,22 @@ export function WhatsAppView({
                   event.preventDefault()
                   const amount = price.trim()
                   if (!amount || !selected.sale?.item) return
-                  dispatch({ type: 'CONFIRM_PRICE', item: selected.sale.item, amount, phone: selected.phone })
+                  dispatch({ type: 'CONFIRM_PRICE', item: selected.sale.item, amount, floor: floor.trim() || undefined, phone: selected.phone })
                   setPrice('')
+                  setFloor('')
                 }}
               >
                 <p>
                   {assignee?.name ?? 'Sales'} needs today’s price for the {selected.sale.item} before {selected.name} is told.
-                  {selected.sale.detail ? ` They asked: ${selected.sale.detail}` : ''}
+                  {selected.sale.detail ? ` Need: ${selected.sale.detail}` : ''} The customer hears the opening price. The agent can come down to the lowest price and no further.
                 </p>
                 <label>
-                  Current price
-                  <input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="450000" inputMode="decimal" />
+                  Opening price
+                  <input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="1000000" inputMode="decimal" />
+                </label>
+                <label>
+                  Lowest price
+                  <input value={floor} onChange={(event) => setFloor(event.target.value)} placeholder="950000" inputMode="decimal" />
                 </label>
                 <button type="submit" className="btn btn-primary">
                   Confirm price
@@ -147,7 +165,7 @@ export function WhatsAppView({
                 <article key={message.id} className={message.author === 'quorum' ? 'wa-bubble mine' : 'wa-bubble'}>
                   <p>{message.text}</p>
                   <time dateTime={message.at}>
-                    {formatWhen(message.at)} · {deliveryLabel(message.status)}
+                    {formatWhen(message.at)} · {deliveryLabel(message.status, message.error)}
                   </time>
                 </article>
               ))}
@@ -161,10 +179,10 @@ export function WhatsAppView({
   )
 }
 
-function deliveryLabel(status: string): string {
+function deliveryLabel(status: string, error?: string): string {
   if (status === 'sent') return 'sent on WhatsApp'
-  if (status === 'queued') return 'sending'
-  if (status === 'failed') return 'not sent'
+  if (status === 'queued' || status === 'sending') return 'sending'
+  if (status === 'failed') return error ? `not sent: ${error}` : 'not sent'
   if (status === 'held') return 'held in Quorum'
   return 'received'
 }

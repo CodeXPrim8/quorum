@@ -70,6 +70,7 @@ export function blankState(reducedMotion = false): AppState {
     prices: [],
     customers: [],
     invoices: [],
+    calls: [],
     goalProposals: [],
     agentSeen: {},
     agentPulse: 0,

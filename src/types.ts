@@ -167,6 +167,8 @@ export type Company = {
   planId?: 'lite' | 'starter' | 'pro' | 'enterprise' | 'byok'
   management: 'direct' | 'managing_director'
   createdAt: string
+  /** Account details and invoice layout. Missing until the owner saves them. */
+  invoiceProfile?: InvoiceProfile
 }
 
 export type Department = {
@@ -301,15 +303,19 @@ export type DesktopMode = 'approved' | 'live'
 /** Work filed inside Quorum after approval (outbox / ledger / CRM-style notes). */
 export type WaAuthor = 'client' | 'quorum'
 
-export type WaDelivery = 'received' | 'queued' | 'held' | 'sent' | 'failed'
+export type WaDelivery = 'received' | 'queued' | 'sending' | 'held' | 'sent' | 'failed'
 
 /** Where a WhatsApp sale stands. A price is not sent until it is confirmed. */
-export type WaSaleStage = 'open' | 'qualifying' | 'awaiting_price' | 'quoted' | 'details' | 'invoiced'
+export type WaSaleStage = 'open' | 'qualifying' | 'awaiting_price' | 'quoted' | 'details' | 'invoiced' | 'calling'
 
 export type WaSale = {
   item?: string
   detail?: string
   stage: WaSaleStage
+  /** True after the one follow-up question for brand and quantity. */
+  askedDetail?: boolean
+  /** True after the floor price has been offered. */
+  offeredFloor?: boolean
   priceAmount?: string
   invoiceNumber?: string
 }
@@ -333,8 +339,34 @@ export type WaChat = {
 export type PriceEntry = {
   id: string
   item: string
+  /** Opening price told to the customer. */
   amount: string
+  /** Lowest price the agent may reach. Missing means the opening price is the floor. */
+  floor?: string
   confirmedAt: string
+}
+
+/** Bank lines the chairman saved for invoices. */
+export type InvoiceProfile = {
+  bankName: string
+  accountName: string
+  accountNumber: string
+  template: 'classic' | 'plain'
+  extra?: string
+}
+
+/** A customer who would not take the lowest chat price. The call waits for the owner. */
+export type CustomerCall = {
+  id: string
+  phone: string
+  name: string
+  item?: string
+  status: 'pending_approval' | 'approved_agent' | 'owner_calling' | 'called'
+  conclusion?: string
+  agreedAmount?: string
+  voiceNote?: string
+  at: string
+  calledAt?: string
 }
 
 /** A person who has written on the company WhatsApp line and given details for an invoice. */
@@ -368,6 +400,9 @@ export type WaMessage = {
   author: WaAuthor
   text: string
   status: WaDelivery
+  /** Why WhatsApp refused this reply. */
+  error?: string
+  file?: { name: string; dataUrl: string }
 }
 
 export type CompanyRecord = {
@@ -634,6 +669,8 @@ export type AppState = {
   customers?: Customer[]
   /** Invoices issued after a customer accepts a price. Missing on older saves. */
   invoices?: CustomerInvoice[]
+  /** Calls the owner must approve before anyone phones a customer. */
+  calls?: CustomerCall[]
   /** Goals the MD proposed. They are not live until you approve them. */
   goalProposals: GoalProposal[]
   /** Lessons the company keeps: owner instructions, decisions, and what the site said. */
@@ -699,7 +736,7 @@ export type Command =
   | { type: 'SET_BILLING_PLAN'; planId: 'lite' | 'starter' | 'pro' | 'enterprise' | 'byok' }
   | {
       type: 'UPDATE_COMPANY'
-      patch: Partial<Pick<Company, 'name' | 'businessType' | 'ownerName' | 'ownerTitle' | 'ownerGender' | 'website' | 'social'>>
+      patch: Partial<Pick<Company, 'name' | 'businessType' | 'ownerName' | 'ownerTitle' | 'ownerGender' | 'website' | 'social' | 'invoiceProfile'>>
     }
   | { type: 'ADD_GOAL'; text: string }
   | { type: 'REMOVE_GOAL'; goalId: string }
@@ -779,9 +816,12 @@ export type Command =
   | { type: 'CLEAR_DESKTOP_GRANT' }
   | { type: 'SET_COMPANY_META'; meta: CompanyMetaStatus }
   | { type: 'WHATSAPP_INBOUND'; phone: string; name: string; text: string; messageId: string; linked: boolean }
-  | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sent' | 'held' | 'failed' }
+  | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sending' | 'sent' | 'held' | 'failed'; error?: string }
   | { type: 'WHATSAPP_DROP'; phone: string }
-  | { type: 'CONFIRM_PRICE'; item: string; amount: string; phone?: string }
+  | { type: 'CONFIRM_PRICE'; item: string; amount: string; floor?: string; phone?: string }
+  | { type: 'DECIDE_CALL'; callId: string; decision: 'agent' | 'owner' }
+  | { type: 'COMPLETE_CALL'; callId: string; conclusion: string; amount?: string; voiceNote?: string }
+  | { type: 'FOLLOW_UP'; customerId: string; channel: 'whatsapp' | 'email' | 'call' }
   | { type: 'INSTAGRAM_RESULT'; designId: string; status: 'published' | 'failed'; error?: string; mediaId?: string }
 
 export type OrgNode = {
