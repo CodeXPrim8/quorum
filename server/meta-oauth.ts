@@ -204,8 +204,7 @@ export function companyInstagramLine(app: MetaAppEnv, companyId: string | undefi
   return app.fallbackInstagram
 }
 
-export function companyWhatsAppLine(app: MetaAppEnv, companyId: string | undefined): WaEnv {
-  const record = companyId && app.encryptKey ? readCompanyMeta(app.encryptKey, companyId) : null
+function whatsAppLineFrom(app: MetaAppEnv, record: CompanyMetaSecret | null): WaEnv {
   if (record?.whatsapp?.token && record.whatsapp.phoneNumberId) {
     return {
       token: record.whatsapp.token,
@@ -215,6 +214,15 @@ export function companyWhatsAppLine(app: MetaAppEnv, companyId: string | undefin
     }
   }
   return app.fallbackWhatsApp
+}
+
+export function companyWhatsAppLine(app: MetaAppEnv, companyId: string | undefined): WaEnv {
+  const record = companyId && app.encryptKey ? readCompanyMeta(app.encryptKey, companyId) : null
+  return whatsAppLineFrom(app, record)
+}
+
+export async function companyWhatsAppLineNow(app: MetaAppEnv, companyId: string | undefined): Promise<WaEnv> {
+  return whatsAppLineFrom(app, await loadCompanyMeta(app, companyId))
 }
 
 export async function companyMetaPublicNow(app: MetaAppEnv, companyId: string | undefined) {
