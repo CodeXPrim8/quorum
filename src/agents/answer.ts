@@ -1,10 +1,11 @@
 import { floorPrompt } from '../domain/call-scene'
+import { isOfficeDraft } from '../domain/office-chat'
 import { kpiOf } from '../domain/authority'
 import { ownerHonorific } from '../domain/meeting'
 import { websiteLine } from '../domain/website'
 import { socialAccounts } from '../domain/social'
 import { memoryBrief, siteLesson } from '../domain/memory'
-import { withoutSpeaker } from '../chat/threads'
+import { COMPANY_THREAD, withoutSpeaker } from '../chat/threads'
 import type { AppState, Staff } from '../types'
 import { readPublicPage, readingRequest } from './company-site'
 import { isDesigner, localTurn, type AgentTurn } from './local'
@@ -29,10 +30,12 @@ export async function answerAs(input: {
   intent: 'reply' | 'design' | 'update'
   taskTitle?: string
   spoken?: boolean
+  threadId?: string
 }): Promise<AgentTurn> {
   const company = input.state.company
   const accounts = socialAccounts(company?.social)
   const roleKey = input.state.roles.find((role) => role.id === input.person.roleId)?.key
+  const office = input.threadId === COMPANY_THREAD && !input.spoken
   const reading = roleKey === 'md' ? await pagesForMd(company?.website, input.prompt) : ''
   const learned = siteLesson(reading)
   const local = localTurn({
@@ -45,9 +48,10 @@ export async function answerAs(input: {
     taskTitle: input.taskTitle,
     socialNote: accounts,
     siteNote: reading,
+    office,
   })
   const link = readModelLink()
-  if (!link) return { ...local, learned }
+  if (!link) return office && isOfficeDraft(local.text) ? { ...local, text: '', learned } : { ...local, learned }
   const designer = isDesigner(input.person, input.state.roles)
   const posting = designer || roleKey === 'social_manager'
   try {
@@ -71,8 +75,15 @@ export async function answerAs(input: {
             ? 'You can read a public website. The reading above is the page you opened. Answer from it. Do not say you cannot browse, and do not ask the owner to paste the page.'
             : '',
           posting ? accounts : '',
-          posting
+          posting && !office
             ? 'When a post is needed, use a connected social account and name that link. File the draft in Quorum after approval. Do not claim it is live on the network.'
+            : '',
+          office
+            ? [
+                'This is the office group. Use it to ask for a fact, answer a colleague, talk about a real customer, or put a finished design up for the next approval.',
+                'Do not draft the reply, email, or caption you would send a customer. Do not mention a lead record, and do not say that nothing has been sent.',
+                'If a customer wrote on WhatsApp, say what they asked and what you still need from the chairman or a colleague.',
+              ].join(' ')
             : '',
           'Speak and write as a senior who has done this job for years. Be specific. Do not invent customers, vendors, or numbers you were not given.',
           input.spoken
@@ -85,8 +96,12 @@ export async function answerAs(input: {
               ].join(' ')
             : 'Write like a colleague in a phone chat: 1 to 3 short sentences. Friendly small talk is welcome. No headings and no bullet lists. Do not start with your name.',
           'You only work inside Quorum. You cannot send email, publish to social networks, pay anyone, or control the computer. You can read a public website when a page reading is included above.',
-          'If asked to send email, publish, pay, or control the computer, say that stays inside Quorum until you approve it, and offer to draft the work in this chat.',
-          'Do the real work of your role here: drafts, comparisons, captions, checklists, and notes the owner can review.',
+          office
+            ? 'Do not offer to draft the work in this chat.'
+            : 'If asked to send email, publish, pay, or control the computer, say that stays inside Quorum until you approve it, and offer to draft the work in this chat.',
+          office
+            ? 'A graphic the designer has finished belongs here, with a question about the next step. Anything else is a conversation, not a document.'
+            : 'Do the real work of your role here: drafts, comparisons, captions, checklists, and notes the owner can review.',
           'Security work stays on this company’s own systems inside the app. Refuse hacking, exploits, and attacks.',
           roleKey === 'sports_analyst'
             ? 'You are the coach’s coach for every sport. Reply with only near-sure, sport-native plays. If the pattern is weak, say there is no stake. Never say guaranteed win.'
@@ -103,11 +118,12 @@ export async function answerAs(input: {
     if (input.intent === 'design' && !parsed.designBrief) parsed.designBrief = local.designBrief
     if (!parsed.text) parsed.text = local.text
     parsed.text = withoutSpeaker(input.person.name, parsed.text)
+    if (office && isOfficeDraft(parsed.text)) parsed.text = ''
     setAgentNotice('')
     return { ...parsed, learned }
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'The model did not answer.'
     setAgentNotice(`${input.person.name} could not reach the model (${reason}). They answered from their role.`)
-    return { ...local, learned }
+    return office && isOfficeDraft(local.text) ? { ...local, text: '', learned } : { ...local, learned }
   }
 }

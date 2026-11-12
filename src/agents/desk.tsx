@@ -484,6 +484,7 @@ export function AgentDesk({ state, dispatch }: { state: AppState; dispatch: (com
           history: job.history,
           intent: job.intent === 'update' ? 'update' : job.intent === 'design' ? 'design' : 'reply',
           taskTitle: job.taskTitle,
+          threadId: job.threadId,
         })
         if (cancel || !turn.text) return
         if (turn.learned) {

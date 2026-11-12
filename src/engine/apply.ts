@@ -10,6 +10,7 @@
  */
 import { isStaffActive, isStaffIdActive, staffById } from '../domain/active'
 import { grantsFrom, permissionMeta } from '../domain/catalog'
+import { isOfficeDraft } from '../domain/office-chat'
 import { COMPANY_THREAD, QUORUM_THREAD, directThreadId, emptyQuorumId, ensureChat, mentionsIn, titleFromAsk, withoutMarks } from '../chat/threads'
 import {
   compileForOwner,
@@ -543,16 +544,19 @@ function completeStaffWork(
   const body = text.trim()
   if (!task || !person || !body || task.assigneeId !== staffId) return state
   if (task.status !== 'in_progress' || task.handoff || step?.kind !== 'work') return state
-  const message = chatMessage(now, {
-    threadId: COMPANY_THREAD,
-    authorId: person.id,
-    authorName: person.name,
-    text: body.slice(0, 1200),
-    mentions: [],
-  })
+  const show = !isOfficeDraft(body)
+  const message = show
+    ? chatMessage(now, {
+        threadId: COMPANY_THREAD,
+        authorId: person.id,
+        authorName: person.name,
+        text: body.slice(0, 1200),
+        mentions: [],
+      })
+    : null
   let next: AppState = {
     ...state,
-    chat: [...state.chat, message],
+    chat: message ? [...state.chat, message] : state.chat,
     agentSeen: { ...state.agentSeen, [person.id]: now },
     agentPulse: now,
   }
@@ -2580,6 +2584,7 @@ function agentMessage(
   let brief = designBrief.trim()
   let scheduled = calendarId.trim()
   if (!person || !thread || !body) return state
+  if (thread.kind === 'company' && !designBrief.trim() && isOfficeDraft(body)) return state
   if ((brief || scheduled) && roleKeyOf(state, person) === 'graphic_designer' && state.designs.some((design) => design.status === 'in_review')) {
     body = 'I’m still waiting on a review of the graphic I already sent before I start another one.'
     brief = ''

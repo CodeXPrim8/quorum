@@ -130,10 +130,10 @@ export async function produceStaffWork(state: AppState, person: Staff, task: Tas
           taxWork
             ? 'When this is a tax or finance entry, use the website summary to understand what the company does, then draft the entry for that business. File it in Quorum. Do not send it to a live tax authority.'
             : '',
-          'Write the actual work product for this task the way a senior in this role would: specific, calm, and useful. 2 to 5 short paragraphs or a tight bullet list.',
+          'Write 1 to 3 sentences for the office group about what a real customer did or what you need from a colleague.',
+          'Do not draft the reply you would send the customer. Do not mention a lead record, and do not say that nothing has been sent.',
           'Use this company’s real business, website, and goal. Do not invent another company, product, or client.',
           'Stay inside Quorum. Do not claim you emailed, posted, paid, hired, or controlled a computer.',
-          'If the work would need an outside system, say it is drafted here and waiting on a connection or owner approval.',
           'End with a line exactly like RESULT: one-sentence summary for the owner.',
         ].join('\n'),
       },

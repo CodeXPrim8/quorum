@@ -3,8 +3,9 @@ import { deleteCloudState, loadCloudState, saveCloudState } from '../cloud/save'
 import { getSupabase, sessionFrom, supabaseConfigured, type CloudSession } from '../cloud/supabase'
 import { applyCommand } from '../engine/apply'
 import { defaultLife, freshClock } from '../engine/life'
-import { ensureChat } from '../chat/threads'
+import { ensureChat, COMPANY_THREAD } from '../chat/threads'
 import { isOfficeLife } from '../domain/reports'
+import { isOfficeDraft } from '../domain/office-chat'
 import { blankState, withDesigner, withMarketsTeam, withSecurityTeam, withSportsAnalyst } from '../domain/sample'
 import { settledPresence } from '../office/presence'
 import { nextDesk } from '../office/world'
@@ -57,7 +58,9 @@ function hydrate(parsed: AppState, now: number): AppState {
   })
   const events = (parsed.events ?? []).filter((event) => event.kind !== 'life' && !isOfficeLife(event.message))
   const reports = (parsed.reports ?? []).filter((item) => item.text.trim() && !isOfficeLife(item.text))
-  const chat = (parsed.chat ?? []).filter((message) => !isOfficeLife(message.text))
+  const chat = (parsed.chat ?? []).filter(
+    (message) => !isOfficeLife(message.text) && !(message.threadId === COMPANY_THREAD && isOfficeDraft(message.text)),
+  )
   return ensureChat(
     withSportsAnalyst(
     withMarketsTeam(

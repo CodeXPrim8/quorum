@@ -23,7 +23,6 @@ export type AgentJob = {
   history: { role: 'user' | 'assistant'; content: string }[]
 }
 
-const SPEAK_GAP = 12 * 60_000
 const PULSE_GAP = 35_000
 const WORK_GAP = 45_000
 
@@ -223,25 +222,7 @@ export function nextJob(state: AppState, now: number): AgentJob | null {
     }
   }
 
-  const task = state.tasks.find((item) => {
-    if (item.status !== 'in_progress' || !item.assigneeId) return false
-    const assignee = state.staff.find((person) => person.id === item.assigneeId)
-    return assignee ? isStaffActive(state, assignee) : false
-  })
-  if (!task?.assigneeId) return null
-  const person = state.staff.find((item) => item.id === task.assigneeId)
-  if (!person || (state.agentSeen[person.id] ?? 0) + SPEAK_GAP > now) return null
-  const already = state.chat.some((message) => message.authorId === person.id && message.text.includes(task.title))
-  if (already) return null
-  return {
-    kind: 'initiative',
-    threadId: COMPANY_THREAD,
-    staffId: person.id,
-    prompt: task.title,
-    intent: 'update',
-    taskTitle: task.title,
-    history: historyFor(state, COMPANY_THREAD, person.id),
-  }
+  return null
 }
 
 function isStaffIdActive(state: AppState, staffId: string | null): boolean {

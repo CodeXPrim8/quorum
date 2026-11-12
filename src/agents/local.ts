@@ -32,6 +32,7 @@ export function localTurn(input: {
   taskTitle?: string
   socialNote?: string
   siteNote?: string
+  office?: boolean
 }): AgentTurn {
   const { person, companyName, ownerName } = input
   const asked = clean(input.text)
@@ -57,7 +58,9 @@ export function localTurn(input: {
   }
   if (/\b(send|email|publish|post|pay|transfer|wire)\b/i.test(asked) && /\b(client|customer|instagram|twitter|linkedin|facebook|tiktok|bank|supplier|live)\b/i.test(asked)) {
     return {
-      text: `I can draft that here. Nothing outside ${companyName} is connected, so I won’t send it, post it, or pay it.`,
+      text: input.office
+        ? `Who is the customer, and what did they actually ask? I’ll take it from there.`
+        : `I can draft that here. Nothing outside ${companyName} is connected, so I won’t send it, post it, or pay it.`,
     }
   }
   if (input.intent === 'update' && input.taskTitle) {
