@@ -870,6 +870,7 @@ function metaProxy(env: Record<string, string>): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
+    envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
     plugins: [react(), modelProxy(env), whatsAppProxy(env), instagramProxy(env), metaProxy(env), agentPlugin(), venuesPlugin()],
     optimizeDeps: {
       exclude: ['@xenova/transformers'],

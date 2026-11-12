@@ -1,7 +1,21 @@
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js'
 
+/** Vite names on this computer, then the names the Vercel Supabase integration already stores. */
+function supabaseUrl(): string {
+  return (import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '').trim()
+}
+
+function supabaseKey(): string {
+  return (
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ''
+  ).trim()
+}
+
 export function supabaseConfigured(): boolean {
-  return Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)
+  return Boolean(supabaseUrl() && supabaseKey())
 }
 
 let client: SupabaseClient | null = null
@@ -10,7 +24,7 @@ let client: SupabaseClient | null = null
 export function getSupabase(): SupabaseClient | null {
   if (!supabaseConfigured()) return null
   if (!client) {
-    client = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY, {
+    client = createClient(supabaseUrl(), supabaseKey(), {
       auth: { persistSession: true, autoRefreshToken: true, storageKey: 'quorum.auth.v1' },
     })
   }
