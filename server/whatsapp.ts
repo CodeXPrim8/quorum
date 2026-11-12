@@ -113,9 +113,12 @@ export function ackInbound(file: string, ids: string[]) {
   writeQueue(file, readQueue(file).filter((item) => !drop.has(item.id)))
 }
 
+const RETIRED_REPLY = /I will not send a price/i
+
 export async function sendWhatsAppText(env: WaEnv, to: string, text: string): Promise<{ ok: boolean; status: number; error?: string }> {
   const phone = to.replace(/\D/g, '')
   const body = text.trim().slice(0, 1000)
+  if (RETIRED_REPLY.test(body)) return { ok: false, status: 409, error: 'This old reply was stopped so it is not sent again.' }
   if (!lineReady(env) || !phone || !body) return { ok: false, status: 503, error: 'The company WhatsApp line is not connected.' }
   const response = await fetch(`https://graph.facebook.com/v21.0/${env.phoneNumberId}/messages`, {
     method: 'POST',
@@ -141,6 +144,7 @@ export async function sendWhatsAppDocument(
   const phone = to.replace(/\D/g, '')
   const caption = text.trim().slice(0, 1000)
   const clean = pdfBase64.replace(/^data:application\/pdf;base64,/i, '')
+  if (RETIRED_REPLY.test(caption)) return { ok: false, status: 409, error: 'This old reply was stopped so it is not sent again.' }
   if (!lineReady(env) || !phone || !clean) return { ok: false, status: 503, error: 'The company WhatsApp line is not connected.' }
   const bytes = Buffer.from(clean, 'base64')
   const form = new FormData()
