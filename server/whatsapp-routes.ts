@@ -2,6 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { companyMetaPublicNow, companyWhatsAppLineNow, metaAppEnv } from './meta-oauth.js'
 import { lineReady, parseWebhook, sendWhatsAppDocument, sendWhatsAppText, signatureOk, verifyChallenge, whatsAppEnv } from './whatsapp.js'
 import { cloudAckInbound, cloudEnqueueInbound, cloudListInbound } from './whatsapp-cloud.js'
+import { answerInbound, rememberOutbound, saveSalesContext, sendIsDuplicate } from './whatsapp-brain.js'
+import { readWhatsAppLog, type SalesContext } from './whatsapp-log.js'
 
 function json(res: ServerResponse, status: number, body: unknown) {
   res.statusCode = status
@@ -72,7 +74,9 @@ export async function serveWhatsApp(req: IncomingMessage, res: ServerResponse, p
         json(res, 200, { ok: true })
         return
       }
-      await cloudEnqueueInbound(parseWebhook(payload))
+      const items = parseWebhook(payload)
+      await cloudEnqueueInbound(items)
+      await answerInbound(items, (companyId) => companyWhatsAppLineNow(app, companyId))
       json(res, 200, { ok: true })
     } catch (error) {
       json(res, 500, { error: error instanceof Error ? error.message : 'The WhatsApp webhook could not be saved.' })
@@ -108,14 +112,54 @@ export async function serveWhatsApp(req: IncomingMessage, res: ServerResponse, p
         companyId?: string
         pdf?: string
         filename?: string
+        messageId?: string
+        inReplyTo?: string
       }
       const line = await companyWhatsAppLineNow(app, body.companyId)
+      const outboundId = String(body.messageId ?? '')
+      const inReplyTo = String(body.inReplyTo ?? '')
+      if (!body.pdf && (await sendIsDuplicate(String(body.to ?? ''), String(body.text ?? ''), inReplyTo || undefined))) {
+        json(res, 200, { ok: true, skipped: true })
+        return
+      }
       const result = body.pdf
         ? await sendWhatsAppDocument(line, String(body.to ?? ''), String(body.text ?? ''), body.pdf, String(body.filename ?? 'invoice.pdf'))
         : await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
+      if (outboundId) {
+        await rememberOutbound(String(body.to ?? ''), outboundId, String(body.text ?? ''), result.ok ? 'sent' : 'failed', result.error)
+      }
       json(res, result.ok ? 200 : result.status, result.ok ? { ok: true } : { error: result.error })
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : 'WhatsApp could not be reached.' })
+    }
+    return
+  }
+
+  if (pathname === '/api/whatsapp/thread' && method === 'GET') {
+    const log = await readWhatsAppLog()
+    json(res, 200, { chats: log.chats })
+    return
+  }
+
+  if (pathname === '/api/whatsapp/context' && method === 'POST') {
+    try {
+      const body = JSON.parse((await readBody(req, 200_000)) || '{}') as SalesContext
+      if (!body || typeof body.company !== 'string') {
+        json(res, 400, { error: 'The sales context was not readable.' })
+        return
+      }
+      await saveSalesContext({
+        companyId: body.companyId,
+        company: body.company,
+        handler: body.handler ?? null,
+        sales: body.sales ?? null,
+        prices: Array.isArray(body.prices) ? body.prices.slice(-30) : [],
+        products: Array.isArray(body.products) ? body.products.slice(0, 20) : [],
+        account: body.account,
+      })
+      json(res, 200, { ok: true })
+    } catch {
+      json(res, 400, { error: 'The sales context was not readable.' })
     }
     return
   }

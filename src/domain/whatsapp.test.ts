@@ -161,4 +161,33 @@ describe('whatsapp command', () => {
     expect(state.calls?.[0]?.status).toBe('pending_approval')
     expect(state.calls?.[0]?.phone).toBe('2348000000001')
   })
+
+  it('treats a budget as the customer limit and keeps a quoted chat from starting over', () => {
+    const now = Date.parse('2026-11-12T07:00:00Z')
+    const ask = (state: ReturnType<typeof bareSample>, id: string, text: string, at = now) =>
+      applyCommand(state, { type: 'WHATSAPP_INBOUND', phone: '2348131074911', name: 'Ada Cole', text, messageId: id, linked: true }, at)
+    let state = ask(bareSample(now), 'wamid.b1', 'Do you have a laptop?')
+    state = ask(state, 'wamid.b2', 'i need a laptop for work, my budget is 500000', now + 1)
+    const budget = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(budget?.sale?.stage).toBe('qualifying')
+    expect(budget?.messages.at(-1)?.text).not.toContain('500000')
+    expect(budget?.messages.at(-1)?.text).not.toMatch(/I will not send a price/i)
+
+    state = ask(state, 'wamid.b3', 'HP, 2 units', now + 2)
+    state = applyCommand(state, { type: 'CONFIRM_PRICE', item: 'laptop', amount: '700000', floor: '650000' }, now + 3)
+    state = ask(state, 'wamid.b4', 'thats on the high side', now + 4)
+    expect(state.whatsapp?.find((item) => item.phone === '2348131074911')?.messages.at(-1)?.text).toContain('₦650,000')
+
+    state = ask(state, 'wamid.b5', 'are you there', now + 5)
+    const here = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(here?.sale?.stage).toBe('quoted')
+    expect(here?.messages.at(-1)?.text).toMatch(/I am here/i)
+    expect(here?.messages.at(-1)?.text).not.toMatch(/specification/i)
+
+    state = ask(state, 'wamid.b6', 'how much gen it go for last', now + 6)
+    const last = state.whatsapp?.find((item) => item.phone === '2348131074911')
+    expect(last?.sale?.stage).toBe('quoted')
+    expect(last?.messages.at(-1)?.text).toContain('₦650,000')
+    expect(last?.messages.at(-1)?.text).not.toMatch(/specification/i)
+  })
 })

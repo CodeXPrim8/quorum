@@ -315,6 +315,8 @@ export function applyCommand(incoming: AppState, command: Command, now: number):
       return setCompanyMeta(state, command.meta)
     case 'WHATSAPP_INBOUND':
       return receiveWhatsApp(state, command, now)
+    case 'WHATSAPP_SYNC':
+      return syncWhatsApp(state, command.chats, now)
     case 'WHATSAPP_DELIVERY':
       return markWhatsAppDelivery(state, command.phone, command.messageId, command.status, now, command.error)
     case 'DECIDE_CALL':
@@ -3029,6 +3031,128 @@ function pointCalendar(calendar: CalendarPost[], design: Design, designId: strin
   )
 }
 
+const RETIRED_WHATSAPP = /I will not send a price/i
+
+function effectsForKnownMessage(state: AppState, command: Extract<Command, { type: 'WHATSAPP_INBOUND' }>, now: number): AppState {
+  const company = state.company
+  const phone = command.phone.replace(/\D/g, '')
+  const text = command.text.trim().slice(0, 1000)
+  if (!company || !phone || !text) return state
+  const existing = (state.whatsapp ?? []).find((chat) => chat.phone === phone)
+  if (!existing) return state
+  const people = state.staff.map((person) => ({
+    id: person.id,
+    name: person.name,
+    title: person.title,
+    roleKey: state.roles.find((role) => role.id === person.roleId)?.key ?? '',
+    departmentId: person.departmentId,
+    active: isStaffActive(state, person),
+  }))
+  const locked = existing.assigneeId ? people.find((item) => item.id === existing.assigneeId && item.active) : null
+  const lane = clientLane(text)
+  const person = lane.refused ? null : locked ?? pickStaff(people, lane.keys)
+  const sales = pickStaff(people, ['quote_specialist', 'sales_manager', 'account_executive'])
+  const profile = company.invoiceProfile
+  const plan = planClientTurn({
+    company: company.name,
+    handler: person ? { id: person.id, name: person.name, title: person.title } : null,
+    sales: sales ? { id: sales.id, name: sales.name, title: sales.title } : null,
+    text,
+    profileName: existing.name,
+    phone,
+    sale: existing.sale,
+    history: existing.messages,
+    prices: state.prices ?? [],
+    products: state.products ?? [],
+    now,
+    account: profile?.accountNumber
+      ? { bankName: profile.bankName, accountName: profile.accountName, accountNumber: profile.accountNumber }
+      : undefined,
+  })
+  let next = state
+  if (plan.customer) {
+    const prior = (next.customers ?? []).find((item) => item.phone === phone)
+    if (!prior || prior.name !== plan.customer.name || prior.email !== plan.customer.email || prior.address !== plan.customer.address) {
+      next = saveWhatsAppCustomer(next, phone, plan.customer, now)
+    }
+  }
+  if (plan.invoice && !(next.invoices ?? []).some((item) => item.number === plan.invoice?.number)) {
+    next = saveWhatsAppInvoice(next, phone, plan.invoice, person?.id, now)
+  }
+  if (plan.call) next = openCustomerCall(next, phone, existing.name, plan.sale.item, now)
+  const file = plan.invoice || plan.resendInvoice ? invoiceFile(next, phone, plan.invoice) : undefined
+  const replyId = `wa_${command.messageId}`.slice(0, 140)
+  return {
+    ...next,
+    whatsapp: (next.whatsapp ?? []).map((chat) => {
+      if (chat.phone !== phone) return chat
+      return {
+        ...chat,
+        sale: plan.sale,
+        linked: command.linked,
+        messages: chat.messages.map((message) => {
+          if (message.id !== replyId || !file || message.file) return message
+          return { ...message, file, status: message.status === 'sent' ? 'queued' as const : message.status }
+        }),
+      }
+    }),
+  }
+}
+
+function syncWhatsApp(state: AppState, chats: Extract<Command, { type: 'WHATSAPP_SYNC' }>['chats'], now: number): AppState {
+  let next = state
+  const local = (next.whatsapp ?? []).map((chat) => ({
+    ...chat,
+    messages: chat.messages.filter((message) => !RETIRED_WHATSAPP.test(message.text)),
+  }))
+  for (const incoming of chats) {
+    const phone = incoming.phone.replace(/\D/g, '')
+    if (!phone) continue
+    const existing = local.find((chat) => chat.phone === phone)
+    const byId = new Map((existing?.messages ?? []).map((message) => [message.id, message]))
+    for (const message of incoming.messages) {
+      if (!message.id || RETIRED_WHATSAPP.test(message.text)) continue
+      const prior = byId.get(message.id)
+      byId.set(message.id, {
+        id: message.id,
+        at: message.at || prior?.at || iso(now),
+        author: message.author,
+        text: message.text,
+        status: message.status,
+        error: message.error,
+        file: prior?.file,
+      })
+    }
+    const messages = [...byId.values()].sort((left, right) => left.at.localeCompare(right.at)).slice(-80)
+    const chat: WaChat = {
+      id: phone,
+      phone,
+      name: incoming.name || existing?.name || phone,
+      messages,
+      assigneeId: existing?.assigneeId ?? null,
+      taskId: existing?.taskId ?? null,
+      sale: incoming.sale ?? existing?.sale,
+      linked: existing?.linked,
+      updatedAt: messages.at(-1)?.at ?? existing?.updatedAt ?? iso(now),
+    }
+    const index = local.findIndex((item) => item.phone === phone)
+    if (index >= 0) local[index] = chat
+    else local.unshift(chat)
+    const effect = incoming.effect
+    if (effect?.customer) {
+      const prior = (next.customers ?? []).find((item) => item.phone === phone)
+      if (!prior || prior.name !== effect.customer.name || prior.email !== effect.customer.email || prior.address !== effect.customer.address) {
+        next = saveWhatsAppCustomer(next, phone, effect.customer, now)
+      }
+    }
+    if (effect?.invoice && !(next.invoices ?? []).some((item) => item.number === effect.invoice?.number)) {
+      next = saveWhatsAppInvoice(next, phone, effect.invoice, existing?.assigneeId ?? undefined, now)
+    }
+    if (effect?.call) next = openCustomerCall(next, phone, chat.name, chat.sale?.item, now)
+  }
+  return { ...next, whatsapp: local }
+}
+
 function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHATSAPP_INBOUND' }>, now: number): AppState {
   const company = state.company
   const phone = command.phone.replace(/\D/g, '')
@@ -3036,7 +3160,9 @@ function receiveWhatsApp(state: AppState, command: Extract<Command, { type: 'WHA
   const messageId = command.messageId.trim()
   if (!company || !phone || !text || !messageId) return state
   const chats = state.whatsapp ?? []
-  if (chats.some((chat) => chat.messages.some((message) => message.id === messageId))) return state
+  if (chats.some((chat) => chat.messages.some((message) => message.id === messageId))) {
+    return effectsForKnownMessage(state, command, now)
+  }
   const lane = clientLane(text)
   const people = state.staff.map((person) => ({
     id: person.id,

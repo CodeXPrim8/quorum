@@ -75,7 +75,10 @@ function hydrate(parsed: AppState, now: number): AppState {
       staff,
       designs: parsed.designs ?? [],
       records: parsed.records ?? [],
-      whatsapp: parsed.whatsapp ?? [],
+      whatsapp: (parsed.whatsapp ?? []).map((chat) => ({
+        ...chat,
+        messages: chat.messages.filter((message) => !/I will not send a price/i.test(message.text)),
+      })),
       prices: parsed.prices ?? [],
       customers: parsed.customers ?? [],
       invoices: parsed.invoices ?? [],

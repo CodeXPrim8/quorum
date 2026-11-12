@@ -1,8 +1,44 @@
 import { useEffect, useRef } from 'react'
-import type { AppState, Command } from '../types'
+import type { AppState, Command, WaSale } from '../types'
 import { polishWhatsApp } from './whatsapp-voice'
 
 type Inbound = { id: string; phone: string; name: string; text: string }
+
+type ThreadChat = {
+  phone: string
+  name: string
+  sale?: WaSale
+  messages: { id: string; at: string; author: 'client' | 'quorum'; text: string; status: 'received' | 'sent' | 'failed' | 'held'; error?: string }[]
+  effect?: {
+    customer?: { name: string; email?: string; address?: string; company?: string; item?: string }
+    invoice?: { number: string; item: string; detail?: string; amount: string; customerName: string; email?: string; address?: string; company?: string }
+    call?: boolean
+  }
+}
+
+function salesContext(state: AppState) {
+  const roleKey = (staffId: string) => state.roles.find((role) => role.id === state.staff.find((person) => person.id === staffId)?.roleId)?.key ?? ''
+  const person = (keys: string[]) => {
+    for (const key of keys) {
+      const found = state.staff.find((item) => roleKey(item.id) === key)
+      if (found) return { id: found.id, name: found.name, title: found.title }
+    }
+    const first = state.staff[0]
+    return first ? { id: first.id, name: first.name, title: first.title } : null
+  }
+  const profile = state.company?.invoiceProfile
+  return {
+    companyId: state.company?.id,
+    company: state.company?.name ?? 'the company',
+    handler: person(['account_executive', 'sales_manager', 'quote_specialist']),
+    sales: person(['quote_specialist', 'sales_manager', 'account_executive']),
+    prices: (state.prices ?? []).slice(-30),
+    products: (state.products ?? []).slice(0, 20).map((product) => ({ id: product.id, name: product.name, fact: product.fact.slice(0, 140) })),
+    account: profile?.accountNumber
+      ? { bankName: profile.bankName, accountName: profile.accountName, accountNumber: profile.accountNumber }
+      : undefined,
+  }
+}
 
 const POSTED_KEY = 'qsi.wa.posted'
 
@@ -25,6 +61,8 @@ function markPosted(id: string) {
 export function WhatsAppDesk({ state, dispatch }: { state: AppState; dispatch: (command: Command) => void }) {
   const dispatchRef = useRef(dispatch)
   dispatchRef.current = dispatch
+  const stateRef = useRef(state)
+  stateRef.current = state
   const sending = useRef(new Set<string>())
 
   const companyId = state.company?.id
@@ -35,13 +73,23 @@ export function WhatsAppDesk({ state, dispatch }: { state: AppState; dispatch: (
     const pull = async () => {
       try {
         const statusQuery = companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''
-        const [statusRes, inboxRes] = await Promise.all([
+        const [statusRes, inboxRes, threadRes] = await Promise.all([
           fetch(`/api/whatsapp/status${statusQuery}`),
           fetch('/api/whatsapp/inbox'),
+          fetch('/api/whatsapp/thread'),
         ])
         if (!statusRes.ok || !inboxRes.ok || stop) return
         const status = (await statusRes.json()) as { linked?: boolean }
         const inbox = (await inboxRes.json()) as { messages?: Inbound[] }
+        const thread = threadRes.ok ? ((await threadRes.json()) as { chats?: ThreadChat[] }) : { chats: [] }
+        if (thread.chats && thread.chats.length > 0) {
+          dispatchRef.current({ type: 'WHATSAPP_SYNC', chats: thread.chats })
+        }
+        void fetch('/api/whatsapp/context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(salesContext(stateRef.current)),
+        }).catch(() => undefined)
         const items = inbox.messages ?? []
         if (items.length === 0) return
         for (const item of items) {
@@ -115,12 +163,14 @@ export function WhatsAppDesk({ state, dispatch }: { state: AppState; dispatch: (
               to: item.phone,
               text,
               companyId,
+              messageId: item.message.id,
+              inReplyTo: item.message.id.startsWith('wa_') ? item.message.id.slice(3) : undefined,
               pdf: item.message.file?.dataUrl,
               filename: item.message.file?.name,
             }),
           })
-          const body = (await response.json().catch(() => ({}))) as { error?: string }
-          const status = response.ok ? 'sent' : response.status === 503 ? 'held' : 'failed'
+          const body = (await response.json().catch(() => ({}))) as { error?: string; skipped?: boolean }
+          const status = body.skipped || response.ok ? 'sent' : response.status === 503 ? 'held' : 'failed'
           dispatchRef.current({
             type: 'WHATSAPP_DELIVERY',
             phone: item.phone,

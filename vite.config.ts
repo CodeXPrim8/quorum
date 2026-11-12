@@ -42,6 +42,8 @@ import {
   verifyChallenge,
   whatsAppEnv,
 } from './server/whatsapp'
+import { answerInbound, rememberOutbound, saveSalesContext, sendIsDuplicate } from './server/whatsapp-brain'
+import { readWhatsAppLog, type SalesContext } from './server/whatsapp-log'
 import { canHostMedia, instagramReady, publishInstagramFeed, readPublishImage } from './server/instagram'
 import { agentPlugin } from './server/agent-plugin'
 import { venuesPlugin } from './server/venues-plugin'
@@ -606,8 +608,11 @@ function whatsAppProxy(env: Record<string, string>): Plugin {
             return
           }
           const payload = raw ? (JSON.parse(raw) as unknown) : {}
-          enqueueInbound(file, parseWebhook(payload))
-          json(res, 200, { ok: true })
+          const items = parseWebhook(payload)
+          enqueueInbound(file, items)
+          void answerInbound(items, async (companyId) => companyWhatsAppLine(app, companyId)).finally(() => {
+            json(res, 200, { ok: true })
+          })
         })
         .catch(() => {
           json(res, 200, { ok: true })
@@ -631,16 +636,55 @@ function whatsAppProxy(env: Record<string, string>): Plugin {
     if (path === '/api/whatsapp/send' && req.method === 'POST') {
       void readBody(req, 800_000)
         .then(async (raw) => {
-          const body = JSON.parse(raw || '{}') as { to?: string; text?: string; companyId?: string; pdf?: string; filename?: string }
+          const body = JSON.parse(raw || '{}') as {
+            to?: string
+            text?: string
+            companyId?: string
+            pdf?: string
+            filename?: string
+            messageId?: string
+            inReplyTo?: string
+          }
           const line = companyWhatsAppLine(app, body.companyId)
+          if (!body.pdf && (await sendIsDuplicate(String(body.to ?? ''), String(body.text ?? ''), body.inReplyTo || undefined))) {
+            json(res, 200, { ok: true, skipped: true })
+            return
+          }
           const result = body.pdf
             ? await sendWhatsAppDocument(line, String(body.to ?? ''), String(body.text ?? ''), body.pdf, String(body.filename ?? 'invoice.pdf'))
             : await sendWhatsAppText(line, String(body.to ?? ''), String(body.text ?? ''))
+          if (body.messageId) {
+            await rememberOutbound(String(body.to ?? ''), body.messageId, String(body.text ?? ''), result.ok ? 'sent' : 'failed', result.error)
+          }
           json(res, result.ok ? 200 : result.status, result.ok ? { ok: true } : { error: result.error })
         })
         .catch((error: unknown) => {
           json(res, 502, { error: error instanceof Error ? error.message : 'WhatsApp could not be reached.' })
         })
+      return
+    }
+    if (path === '/api/whatsapp/thread' && req.method === 'GET') {
+      void readWhatsAppLog()
+        .then((log) => json(res, 200, { chats: log.chats }))
+        .catch(() => json(res, 200, { chats: [] }))
+      return
+    }
+    if (path === '/api/whatsapp/context' && req.method === 'POST') {
+      void readBody(req, 200_000)
+        .then(async (raw) => {
+          const body = JSON.parse(raw || '{}') as SalesContext
+          await saveSalesContext({
+            companyId: body.companyId,
+            company: String(body.company ?? ''),
+            handler: body.handler ?? null,
+            sales: body.sales ?? null,
+            prices: Array.isArray(body.prices) ? body.prices.slice(-30) : [],
+            products: Array.isArray(body.products) ? body.products.slice(0, 20) : [],
+            account: body.account,
+          })
+          json(res, 200, { ok: true })
+        })
+        .catch(() => json(res, 400, { error: 'The sales context was not readable.' }))
       return
     }
     res.statusCode = 404

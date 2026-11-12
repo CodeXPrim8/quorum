@@ -131,6 +131,15 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
     return acceptQuote(input, sale, handler, text)
   }
 
+  if ((isCheckIn(text) || (isGreeting(text) && sale.stage !== 'open')) && sale.item && sale.stage !== 'open') {
+    const offer = sale.priceAmount ? ` The price for the ${sale.item} is still ${sale.priceAmount}.` : ''
+    return {
+      reply: introduce(handler, input.company, input.history, `Yes, I am here.${offer} Tell me how you want to continue.`),
+      sale,
+      notes: [],
+    }
+  }
+
   if (sale.stage === 'quoted' && sale.item && sale.priceAmount && bargains(text) && !differentItem(text, sale.item)) {
     const priced = latestPrice(input.prices, sale.item)
     const floor = priced?.floor && nairaValue(priced.floor) > 0 && nairaValue(priced.floor) < nairaValue(priced.amount) ? priced.floor : ''
@@ -155,6 +164,11 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
         call: true,
       }
     }
+    return {
+      reply: introduce(handler, input.company, input.history, `${sale.priceAmount} is the lowest I can confirm for the ${sale.item}. If you want it, I will prepare the invoice.`),
+      sale,
+      notes: [],
+    }
   }
 
   if (sale.stage === 'quoted' && sale.item && sale.priceAmount && !differentItem(text, sale.item)) {
@@ -170,6 +184,12 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
         sale: { ...sale, priceAmount: priced.amount },
         notes: [],
       }
+    }
+    const who = sales ?? handler
+    return {
+      reply: introduce(handler, input.company, input.history, `I am confirming today's price for the ${sale.item} again, and I will send the figure in this chat.`),
+      sale: { ...sale, stage: 'awaiting_price', priceAmount: undefined },
+      notes: notesForMissingPrice(handler, who, input.profileName, sale.item, sale.detail, ''),
     }
   }
 
@@ -187,7 +207,7 @@ export function planClientTurn(input: TurnInput): PlannedTurn {
   }
 
   const item = itemFrom(text) ?? (sale.item && !isGreeting(text) ? sale.item : rememberedItem(input.history))
-  if (!item || isGreeting(text)) {
+  if (!item || (isGreeting(text) && (!sale.item || sale.stage === 'open'))) {
     return {
       reply: `Hello, this is ${handler.name} from ${input.company}. How can I help you today?`,
       sale: { ...sale, stage: 'open' },
@@ -389,8 +409,21 @@ function differentItem(text: string, item: string | undefined): boolean {
   return Boolean(next && item && !sameItem(next, item))
 }
 
+function withoutBudget(text: string): string {
+  return text
+    .replace(/\b(?:my |the )?budget(?:\s+is|\s+of)?\s*(?:₦|ngn|naira)?\s*[\d,.]+\b/gi, ' ')
+    .replace(/\bi (?:have|get|can pay|can spend)\s*(?:₦|ngn|naira)?\s*[\d,.]+\b/gi, ' ')
+}
+
+function unitQuantity(text: string): boolean {
+  return [...withoutBudget(text).matchAll(/\b(\d{1,3})\b/g)].some((match) => {
+    const value = Number(match[1])
+    return value > 0 && value <= 100
+  })
+}
+
 function hasEnough(text: string): boolean {
-  const qty = /\b\d+\b/.test(text)
+  const qty = unitQuantity(text)
   const spec =
     /\b(gb|tb|ram|ssd|hdd|inch|core|hp|dell|lenovo|apple|asus|acer|brand|model|classroom|office|gaming|student|school|page|pages|logo|banner|unit|units|piece|pieces|pack)\b/i.test(
       text,
@@ -406,6 +439,10 @@ function agrees(text: string): boolean {
 
 function isGreeting(text: string): boolean {
   return /^(hi|hello|hey|good morning|good afternoon|good evening|how are you|how far)\b[.!?\s]*$/i.test(text.trim())
+}
+
+function isCheckIn(text: string): boolean {
+  return /^(are you there|you there|you dey|are you still there|hello\??|hi\??)\b[.!?\s]*$/i.test(text.trim())
 }
 
 function productFact(products: Product[], item: string): string {
@@ -457,7 +494,7 @@ function notesForStepDown(handler: SaleStaff, sales: SaleStaff, customer: string
 }
 
 function bargains(text: string): boolean {
-  return /\b(too (?:much|expensive|high)|reduce|discount|last price|best price|lower|come down|can you do|better price)\b/i.test(text)
+  return /\b(too (?:much|expensive|high)|high side|on the high|reduce|discount|last price|your last|final price|best price|lowest|cheapest|lower|come down|can you do|better price|how much (?:can|you) (?:you )?go|gen it go|last offer)\b/i.test(text)
 }
 
 function refuses(text: string): boolean {
@@ -467,7 +504,7 @@ function refuses(text: string): boolean {
 function cleanNeed(text: string, item: string): string {
   const use = text.match(/\bfor (work|school|the office|office|gaming|business|home|students?)\b/i)
   const brand = text.match(/\b(hp|dell|lenovo|apple|asus|acer|macbook)\b/i)
-  const qty = text.match(/\b(\d+)\b/)
+  const qty = withoutBudget(text).match(/\b(\d{1,3})\b/)
   const parts = [qty ? `${qty[1]}` : '', brand?.[1] ?? '', use ? use[0].toLowerCase() : ''].filter(Boolean)
   if (parts.length > 0) return parts.join(' ').slice(0, 80)
   if (text.trim().length <= 32 && !/\b(anyway|anyways|need|want|have|laptop)\b/i.test(text)) return clip(text)

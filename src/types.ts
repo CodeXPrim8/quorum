@@ -816,6 +816,20 @@ export type Command =
   | { type: 'CLEAR_DESKTOP_GRANT' }
   | { type: 'SET_COMPANY_META'; meta: CompanyMetaStatus }
   | { type: 'WHATSAPP_INBOUND'; phone: string; name: string; text: string; messageId: string; linked: boolean }
+  | {
+      type: 'WHATSAPP_SYNC'
+      chats: {
+        phone: string
+        name: string
+        sale?: WaSale
+        messages: { id: string; at: string; author: 'client' | 'quorum'; text: string; status: 'received' | 'sent' | 'failed' | 'held'; error?: string }[]
+        effect?: {
+          customer?: { name: string; email?: string; address?: string; company?: string; item?: string }
+          invoice?: { number: string; item: string; detail?: string; amount: string; customerName: string; email?: string; address?: string; company?: string }
+          call?: boolean
+        }
+      }[]
+    }
   | { type: 'WHATSAPP_DELIVERY'; phone: string; messageId: string; status: 'sending' | 'sent' | 'held' | 'failed'; error?: string }
   | { type: 'WHATSAPP_DROP'; phone: string }
   | { type: 'CONFIRM_PRICE'; item: string; amount: string; floor?: string; phone?: string }
