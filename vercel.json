@@ -10,6 +10,8 @@
     }
   ],
   "rewrites": [
+    { "source": "/api/model/link", "destination": "/api/whatsapp/status?route=model&link=1" },
+    { "source": "/api/model", "destination": "/api/whatsapp/status?route=model" },
     { "source": "/privacy", "destination": "/privacy.html" },
     { "source": "/privacy/", "destination": "/privacy.html" }
   ]
