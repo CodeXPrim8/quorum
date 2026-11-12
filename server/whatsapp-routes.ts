@@ -47,7 +47,8 @@ export async function serveWhatsApp(req: IncomingMessage, res: ServerResponse, p
     const challenge = verifyChallenge(url.searchParams, fallback.verifyToken)
     if (!challenge) {
       res.statusCode = 403
-      res.end()
+      res.setHeader('Content-Type', 'text/plain')
+      res.end('This address is for Meta WhatsApp. Open Quorum and go to WhatsApp to read client messages.')
       return
     }
     res.statusCode = 200
