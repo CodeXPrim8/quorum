@@ -3,10 +3,14 @@ import type { InstagramEnv } from './instagram'
 import { instagramEnv } from './instagram'
 import {
   encryptKeyFromEnv,
+  cloudMetaConfig,
   patchCompanyMeta,
+  patchCompanyMetaCloud,
   publicMetaStatus,
   readCompanyMeta,
+  readCompanyMetaCloud,
   type CompanyInstagramSecret,
+  type CompanyMetaSecret,
   type CompanyWhatsAppSecret,
 } from './meta-store'
 import { whatsAppEnv, type WaEnv } from './whatsapp'
@@ -156,15 +160,16 @@ export async function finishInstagramOAuth(
   const short = await exchangeCode(app, code)
   const longLived = await longLivedUserToken(app, short)
   const instagram = await pickInstagramPage(longLived)
-  patchCompanyMeta(app.encryptKey, companyId, { instagram })
+  if (cloudMetaConfig()) await patchCompanyMetaCloud(app.encryptKey, companyId, { instagram })
+  else patchCompanyMeta(app.encryptKey, companyId, { instagram })
   return { username: instagram.username, accountId: instagram.userId }
 }
 
-export function saveCompanyWhatsApp(
+export async function saveCompanyWhatsApp(
   app: MetaAppEnv,
   companyId: string,
   input: { token: string; phoneNumberId: string; verifyToken?: string; displayPhone?: string },
-): CompanyWhatsAppSecret {
+): Promise<CompanyWhatsAppSecret> {
   if (!app.encryptKey) throw new Error('Set META_ENCRYPT_KEY before connecting company accounts.')
   const whatsapp: CompanyWhatsAppSecret = {
     token: input.token.trim(),
@@ -176,8 +181,15 @@ export function saveCompanyWhatsApp(
   if (!whatsapp.token || !whatsapp.phoneNumberId) {
     throw new Error('WhatsApp needs a Cloud API token and a phone number id.')
   }
-  patchCompanyMeta(app.encryptKey, companyId, { whatsapp })
+  if (cloudMetaConfig()) await patchCompanyMetaCloud(app.encryptKey, companyId, { whatsapp })
+  else patchCompanyMeta(app.encryptKey, companyId, { whatsapp })
   return whatsapp
+}
+
+async function loadCompanyMeta(app: MetaAppEnv, companyId: string | undefined): Promise<CompanyMetaSecret | null> {
+  if (!companyId || !app.encryptKey) return null
+  if (cloudMetaConfig()) return readCompanyMetaCloud(app.encryptKey, companyId)
+  return readCompanyMeta(app.encryptKey, companyId)
 }
 
 export function companyInstagramLine(app: MetaAppEnv, companyId: string | undefined): InstagramEnv {
@@ -205,8 +217,16 @@ export function companyWhatsAppLine(app: MetaAppEnv, companyId: string | undefin
   return app.fallbackWhatsApp
 }
 
+export async function companyMetaPublicNow(app: MetaAppEnv, companyId: string | undefined) {
+  return shapeCompanyMeta(app, await loadCompanyMeta(app, companyId))
+}
+
 export function companyMetaPublic(app: MetaAppEnv, companyId: string | undefined) {
   const record = companyId && app.encryptKey ? readCompanyMeta(app.encryptKey, companyId) : null
+  return shapeCompanyMeta(app, record)
+}
+
+function shapeCompanyMeta(app: MetaAppEnv, record: CompanyMetaSecret | null) {
   const status = publicMetaStatus(record)
   const fallbackIg = Boolean(app.fallbackInstagram.token && app.fallbackInstagram.userId)
   const fallbackWa = Boolean(app.fallbackWhatsApp.token && app.fallbackWhatsApp.phoneNumberId)

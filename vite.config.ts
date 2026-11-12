@@ -793,7 +793,7 @@ function metaProxy(env: Record<string, string>): Plugin {
     }
     if (path === '/api/meta/whatsapp/connect' && req.method === 'POST') {
       void readBody(req, 20_000)
-        .then((raw) => {
+        .then(async (raw) => {
           const body = JSON.parse(raw || '{}') as {
             companyId?: string
             token?: string
@@ -810,7 +810,7 @@ function metaProxy(env: Record<string, string>): Plugin {
             json(res, 503, { error: 'Set META_ENCRYPT_KEY before companies can connect WhatsApp.' })
             return
           }
-          const saved = saveCompanyWhatsApp(app, companyId, {
+          const saved = await saveCompanyWhatsApp(app, companyId, {
             token: String(body.token ?? ''),
             phoneNumberId: String(body.phoneNumberId ?? ''),
             verifyToken: body.verifyToken ? String(body.verifyToken) : undefined,
